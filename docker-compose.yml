@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # 1. Servicio de Coordinación para Kafka (Zookeeper)
+  # 1. Servicio de Coordinación para Kafka (Zookeeper) - NECESARIO
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: zookeeper
@@ -14,17 +14,16 @@ services:
 
   # 2. Servicio del Broker de Kafka (Gestor de Colas)
   kafka:
-    image: confluentinc/cp-kafka:7.5.0
+    image: confluentinc/cp-kafka:7.5.0 # Usamos una imagen de Confluent, más fácil de configurar con Zookeeper
     container_name: kafka
     hostname: kafka
     ports:
-      - "9092:9092"  # Puerto para la conexión desde el HOST (máquina local)
+      - "9092:9092"
     depends_on:
-      - zookeeper
+      - zookeeper # Dependencia reactivada, es crucial
     environment:
       KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      # Crucial para permitir que los contenedores y el host se conecten
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181 # Conexión al servicio 'zookeeper'
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
       KAFKA_INTERN_LISTENER_NAME: PLAINTEXT
@@ -35,17 +34,15 @@ services:
     build:
       context: ./EV_Central
     container_name: ev_central
-    # Puerto de escucha del socket para Autenticación y Status de los Monitores
     ports:
       - "8080:8080"
     environment:
-      # IP/Puerto del Broker para la CENTRAL (usa el nombre del servicio en Docker)
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       CENTRAL_PORT: 8080
     depends_on:
       - kafka
-    # Parámetros para la aplicación Python: Puerto, IP_KAFKA
-    command: ["python3", "EV_Central.py", "8080", "kafka:29092"]
+    # command: ["python3", "EV_Central.py", "8080", "kafka:29092"]
+    command: ["/bin/bash", "-c", "tail -f /dev/null"]
 
   # 4. Módulo CP - ENGINE (Simulación de Suministro)
   cp_engine_1:
@@ -54,13 +51,12 @@ services:
     container_name: ev_cp_e_1
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      # El Engine necesita saber su Monitor para recibir el "chequeo de salud"
       MONITOR_HOST: ev_cp_m_1
-      MONITOR_PORT: 8081 # El puerto que el Monitor expondrá para el Engine
+      MONITOR_PORT: 8081
     depends_on:
       - kafka
-      - central # Asegurar que la CENTRAL esté lista, aunque se conecte al Monitor
-    command: ["python3", "EV_CP_E.py", "kafka:29092"] # Solo necesita Kafka
+      - central
+    command: ["python3", "EV_CP_E.py", "kafka:29092"]
 
   # 5. Módulo CP - MONITOR (Cliente de Sockets y Chequeo de Salud)
   cp_monitor_1:
@@ -68,16 +64,14 @@ services:
       context: ./EV_CP_M
     container_name: ev_cp_m_1
     ports:
-      - "8081:8081" # Puerto de escucha para el Engine
+      - "8081:8081"
     environment:
-      CENTRAL_HOST: ev_central # Nombre del servicio de la central
+      CENTRAL_HOST: ev_central
       CENTRAL_PORT: 8080
-      [cite_start]CP_ID: "ALC1" # ID único del CP [cite: 76]
-      # IP/Puerto del Engine (el Monitor actúa como Server local para el Engine)
+      CP_ID: "ALC1"
       ENGINE_PORT: 8081
     depends_on:
       - central
-    # Parámetros para la aplicación Python: IP_ENGINE, PUERTO_CENTRAL, ID_CP
     command: ["python3", "EV_CP_M.py", "ev_cp_e_1", "8080", "ALC1"]
 
   # 6. Módulo DRIVER (Solicitudes de Recarga)
@@ -87,9 +81,9 @@ services:
     container_name: ev_driver_1
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      [cite_start]DRIVER_ID: 101 # ID único del cliente [cite: 278]
+      DRIVER_ID: 101
     depends_on:
       - kafka
       - central
-    # Parámetros para la aplicación Python: IP_KAFKA, ID_CLIENTE
-    command: ["python3", "EV_Driver.py", "kafka:29092", "101"]
+    # command: ["python3", "EV_Driver.py", "kafka:29092", "101"]
+    command: ["/bin/bash", "-c", "tail -f /dev/null"]
