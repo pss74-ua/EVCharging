@@ -153,7 +153,7 @@ def create_topics(bootstrap_servers, topic_list):
             logging.info(f"✅ Tópico '{topic}' creado o verificado con éxito.")
         except Exception as e:
             # Si el error es TOPIC_ALREADY_EXISTS, simplemente continuamos
-            if 'Topic already exists' not in str(e):
+            if 'TOPIC_ALREADY_EXISTS' not in str(e):
                 logging.error(f"❌ Fallo al crear el tópico '{topic}': {e}")
             else:
                 logging.info(f"✅ Tópico '{topic}' verificado (ya existía).")
