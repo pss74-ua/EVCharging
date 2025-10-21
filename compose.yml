@@ -1,0 +1,101 @@
+# ===========================================================================
+# EVCharging - Docker Compose para levantar Apache Kafka 
+# ===========================================================================
+
+services:
+  kafka:
+    image: apache/kafka:latest
+
+    # Nombre visible del contenedor
+    container_name: kafka
+
+    # Nombre interno de host dentro de la red Docker
+    hostname: kafka
+
+    # Exposición del puerto 9092 al exterior (localhost:9092)
+    ports:
+      - "9092:9092"
+
+    environment:
+      # -------------------------------
+      #  Configuración general de Kafka
+      # -------------------------------
+
+      # Kafka en modo KRaft (sin necesidad de Zookeeper)
+      KAFKA_PROCESS_ROLES: broker,controller
+
+      # Identificador del nodo (único en el clúster)
+      KAFKA_NODE_ID: 1
+
+      # Define los votantes del quorum del controlador (control plane de KRaft)
+      # En este caso solo hay uno: el propio broker
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+
+      # -------------------------------
+      # Listeners y configuración de red
+      # -------------------------------
+
+      # Listeners: dónde Kafka escucha las conexiones
+      # - PLAINTEXT: para productores/consumidores
+      # - CONTROLLER: canal interno del clúster
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:29093
+
+      # Cómo se anuncia el broker a los clientes (usado por los módulos externos)
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+
+      # Asocia los nombres de listener con su protocolo de seguridad
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+
+      # Especifica cuál listener usa el rol de controlador
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      # Define cuál listener se usa para comunicación entre brokers
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # -------------------------------
+      # Almacenamiento y configuración del clúster
+      # -------------------------------
+
+      # ID del clúster 
+      CLUSTER_ID: "EVCluster01"
+
+      # Carpeta donde Kafka guardará datos, logs, offsets y topics
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+
+      # -------------------------------
+      #  Permitir conexiones sin autenticación
+      # -------------------------------
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+
+    # -------------------------------
+    # Volúmenes persistentes
+    # -------------------------------
+    # Kafka guarda sus datos (logs, topics, offsets, etc.) en esta ruta.
+    # Así no se pierden al reiniciar o eliminar el contenedor.
+    volumes:
+      - kafka_data:/bitnami/kafka
+
+    # -------------------------------
+    # Red de comunicación interna
+    # -------------------------------
+    # Los servicios que se añadan aquí (por ejemplo EV_Central) podrán comunicarse
+    # usando el nombre "kafka" en lugar de una IP (bootstrap.servers=kafka:9092)
+    networks:
+      - evcharging
+
+# ===========================================================================
+# Volumen persistente
+# ===========================================================================
+# Guarda los datos de Kafka fuera del contenedor. Si borras el contenedor,
+# los topics y mensajes seguirán guardados hasta eliminar el volumen manualmente.
+volumes:
+  kafka_data:
+
+# ===========================================================================
+# Red interna de la práctica
+# ===========================================================================
+# Todos los contenedores en esta red pueden verse entre sí por nombre.
+# Ejemplo: EV_Central podrá conectarse a Kafka con "bootstrap.servers=kafka:9092"
+networks:
+  evcharging:
+    driver: bridge
