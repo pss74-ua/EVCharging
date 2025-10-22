@@ -1,5 +1,3 @@
-# EV_CP_E.py
-
 import sys
 import socket
 import threading
@@ -354,3 +352,66 @@ def main():
         choice = print_menu()
         
         if choice == '1': # Simular Plug-in
+            with lock:
+                if state == State.AUTHORIZED:
+                    state = State.CHARGING
+                    stop_charging_event.clear()
+                    # Iniciar hilo de simulación de carga
+                    threading.Thread(target=charging_simulation_thread, daemon=True).start()
+                elif state == State.IDLE:
+                    print("[Menu] No se puede enchufar. El vehículo no ha sido autorizado por Central.")
+                else:
+                    print(f"[Menu] No se puede enchufar. Estado actual: {state}")
+                    
+        elif choice == '2': # Simular Unplug
+            with lock:
+                if state == State.CHARGING:
+                    print("[Menu] Simulación de 'Unplug'. Deteniendo suministro...")
+                    stop_charging_event.set() # El hilo de carga se encargará del resto
+                else:
+                    print("[Menu] No se puede desenchufar. No hay ninguna carga activa.")
+
+        elif choice == '3': # Simular Avería
+            with lock:
+                if health_status == "KO":
+                    print("[Menu] La avería ya está simulada.")
+                else:
+                    health_status = "KO"
+                    state = State.FAULTED # Poner en estado averiado
+                    print("[Menu] ¡AVERÍA SIMULADA! Se reportará 'KO' al Monitor.")
+                    # [cite_start]Si estaba cargando, el hilo de carga lo detectará [cite: 191]
+                    # Enviar notificación de estado a Central
+                    send_kafka_message(TOPIC_STATUS_UPDATES, {
+                        "cp_id": cp_id,
+                        "timestamp": time.time(),
+                        "status": State.FAULTED,
+                        "info": "Fault simulated by user"
+                    })
+
+        elif choice == '4': # Resolver Avería
+            with lock:
+                if health_status == "OK":
+                    print("[Menu] El CP no está en estado de avería.")
+                else:
+                    health_status = "OK"
+                    state = State.IDLE # Vuelve a estar disponible
+                    print("[Menu] Avería resuelta. Se reportará 'OK' al Monitor.")
+                    # [cite_start]Notificar a Central que la avería está resuelta [cite: 190]
+                    send_kafka_message(TOPIC_STATUS_UPDATES, {
+                        "cp_id": cp_id,
+                        "timestamp": time.time(),
+                        "status": State.IDLE,
+                        "info": "Fault resolved by user"
+                    })
+        
+        elif choice == '5': # Salir
+            print("[Info] Apagando EV_CP_E...")
+            if kafka_producer:
+                kafka_producer.close()
+            break
+            
+        else:
+            print("[Error] Opción no válida.")
+
+if __name__ == "__main__":
+    main()
