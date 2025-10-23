@@ -1,3 +1,5 @@
+# Ejecución: python EV_CP_E.py localhost:9092 (python EV_CP_E.py <broker_kafka>)
+
 import sys
 import socket
 import threading
@@ -20,6 +22,7 @@ TOPIC_TRANSACTIONS = "cp_transactions"      # CP -> Central (para inicio/fin de 
 cp_id = None
 kafka_bootstrap_servers = None
 kafka_producer = None
+kafka_consumer_ready = threading.Event() # Para sincronizar con el Monitor
 
 # Estados del CP
 class State:
@@ -50,7 +53,7 @@ def send_kafka_message(topic, message):
             return
         
         # print(f"[KAFKA->] Enviando a {topic}: {message}") # Descomentar para debug
-        kafka_producer.send(topic, json.dumps(message).encode('utf-8'))
+        kafka_producer.send(topic, message)
         kafka_producer.flush()
     except Exception as e:
         print(f"[Error Kafka] No se pudo enviar mensaje a {topic}: {e}")
@@ -79,6 +82,20 @@ def handle_monitor_connection(conn, addr):
                     print(f"[Error] Monitor intentó registrar ID {received_id} pero ya somos {cp_id}")
                     conn.sendall(b"NACK_ID_MISMATCH")
                     return
+                
+            kafka_consumer_ready.clear() # Limpiar evento
+
+            # Iniciar hilo de Kafka
+            print(f"[Sync] Iniciando hilo consumidor de Kafka para {received_id}...")
+            threading.Thread(target=kafka_consumer_thread, args=(received_id,), daemon=True).start()
+
+            # Esperar a que el hilo de Kafka esté listo (máx 10s)
+            if not kafka_consumer_ready.wait(timeout=10.0):
+                print("[Error Fatal] Timeout. El consumidor de Kafka no se inició (¿Broker caído?).")
+                conn.sendall(b"NACK_KAFKA_TIMEOUT")
+                return
+
+            print("[Sync] Hilo de Kafka listo.")            
             conn.sendall(b"ACK_REGISTER")
         else:
             print("[Error] Primer mensaje del Monitor no fue REGISTER_ID. Desconectando.")
@@ -129,18 +146,14 @@ def start_socket_server():
     finally:
         server_socket.close()
 
-def kafka_consumer_thread():
+def kafka_consumer_thread(cp_id_arg):
     """
     Escucha mensajes de EV_Central (autorizaciones, comandos stop/resume).
    
     """
     global state, current_driver_id, current_price_kwh, lock
-    
-    # Esperar hasta que el CP_ID haya sido establecido por el Monitor
-    while cp_id is None:
-        time.sleep(1)
         
-    authorization_topic = f"cp_auth_{cp_id}"
+    authorization_topic = f"cp_auth_{cp_id_arg}"
     consumer = None
     
     while consumer is None:
@@ -149,16 +162,26 @@ def kafka_consumer_thread():
                 authorization_topic,
                 bootstrap_servers=kafka_bootstrap_servers,
                 auto_offset_reset='earliest',
-                group_id=f"engine-group-{cp_id}", # Grupo único para este CP
+                group_id=f"engine-group-{cp_id_arg}", # Grupo único para este CP
                 value_deserializer=lambda x: json.loads(x.decode('utf-8'))
             )
+
+            # Forzar conexión
+            consumer.poll(timeout_ms=1000)
+
             print(f"[KAFKA] Escuchando autorizaciones en topic: {authorization_topic}")
+            kafka_consumer_ready.set() # Indicar que el consumidor está listo
+
         except NoBrokersAvailable:
             print("[Error Kafka] No se puede conectar al broker. Reintentando en 5s...")
             time.sleep(5)
+            kafka_consumer_ready.set() 
+            return
         except Exception as e:
             print(f"[Error Kafka] Error al crear consumidor: {e}. Reintentando en 5s...")
             time.sleep(5)
+            kafka_consumer_ready.set()
+            return
 
     for message in consumer:
         try:
@@ -220,6 +243,10 @@ def charging_simulation_thread():
     
     while not stop_charging_event.is_set():
         time.sleep(1) # Enviar información cada segundo
+
+        status_msg = None
+        kwh_this_loop = 0.0
+        cost_this_loop = 0.0
         
         with lock:
             # Comprobar si hay una avería durante el suministro
@@ -257,8 +284,16 @@ def charging_simulation_thread():
                 "session_kwh": total_kwh,
                 "session_cost": total_cost
             }
+            # Copia los valores para el print
+            kwh_this_loop = total_kwh
+            cost_this_loop = total_cost
+
+        if status_msg:
             send_kafka_message(TOPIC_STATUS_UPDATES, status_msg)
-            print(f"  ...Suministrando: {total_kwh:.3f} kWh, {total_cost:.2f} €", end='\r')
+
+        print(f"  ...Suministrando: {kwh_this_loop:.3f} kWh, {cost_this_loop:.2f} €", end='\r')
+            
+    print("\n[Carga] Bucle de simulación detenido.") # Añadimos \n para limpiar
 
     # --- Bucle de carga finalizado (por unplug, avería o stop) ---
     print("\n[Carga] Bucle de simulación detenido.")
@@ -294,20 +329,29 @@ def print_menu():
     """Muestra el menú de simulación del CP."""
     global state, health_status, cp_id, current_driver_id
     
+    # 1. Copia las variables de estado de forma atómica
     with lock:
-        print("\n--- EV Charging Point ENGINE Menu ---")
-        print(f"      ID: {cp_id} | Estado: {state} | Salud: {health_status}")
-        if state == State.CHARGING:
-            print(f"      Suministrando a: {current_driver_id}")
-        print("-----------------------------------")
-        print("1. Simular 'Plug-in' (Enchufar vehículo)")
-        print("2. Simular 'Unplug' (Desenchufr vehículo)")
-        print("3. Simular AVERÍA (Reportar KO al Monitor)")
-        print("4. Resolver AVERÍA (Reportar OK al Monitor)")
-        print("5. Salir")
-        print("-----------------------------------")
-        print("Esperando acciones (Menú) o eventos (Red)...")
-        return input("Seleccione una opción: ")
+        _id = cp_id
+        _state = state
+        _health = health_status
+        _driver = current_driver_id
+    
+    # 2. Imprime el menú (ya sin tener el cerrojo)
+    print("\n--- EV Charging Point ENGINE Menu ---")
+    print(f"      ID: {_id} | Estado: {_state} | Salud: {_health}")
+    if _state == State.CHARGING:
+        print(f"      Suministrando a: {_driver}")
+    print("-----------------------------------")
+    print("1. Simular 'Plug-in' (Enchufar vehículo)")
+    print("2. Simular 'Unplug' (Desenchufr vehículo)")
+    print("3. Simular AVERÍA (Reportar KO al Monitor)")
+    print("4. Resolver AVERÍA (Reportar OK al Monitor)")
+    print("5. Salir")
+    print("-----------------------------------")
+    print("Esperando acciones (Menú) o eventos (Red)...")
+    
+    # 3. Pide la entrada del usuario (sin tener el cerrojo)
+    return input("Seleccione una opción: ")
 
 # --- Función Principal ---
 
@@ -343,11 +387,8 @@ def main():
     while cp_id is None:
         time.sleep(1)
     print(f"[Info] ¡Motor del CP {cp_id} listo!")
-    
-    # 5. Iniciar hilo del consumidor de Kafka (ahora que tenemos ID)
-    threading.Thread(target=kafka_consumer_thread, daemon=True).start()
 
-    # 6. Bucle principal (Menú de simulación)
+    # 5. Bucle principal (Menú de simulación)
     while True:
         choice = print_menu()
         
@@ -367,9 +408,30 @@ def main():
             with lock:
                 if state == State.CHARGING:
                     print("[Menu] Simulación de 'Unplug'. Deteniendo suministro...")
-                    stop_charging_event.set() # El hilo de carga se encargará del resto
+                    stop_charging_event.set() # 1. Enviar señal de parada
                 else:
                     print("[Menu] No se puede desenchufar. No hay ninguna carga activa.")
+                    continue # Saltar el resto del bucle
+            
+            # 2. Esperar (fuera del lock) a que el hilo de carga termine.
+            # El hilo de carga llamará a .clear() al final de su ejecución.
+            # Cuando .clear() es llamado, .wait() (que espera a que esté 'set')
+            # ya no es útil.
+            # Vamos a esperar a que el evento sea 'clear' (limpiado)
+            
+            print("[Menu] Esperando a que el hilo de carga finalice...")
+            
+            # Esperamos MÁXIMO 3 segundos a que el evento sea limpiado
+            timeout_counter = 0
+            while stop_charging_event.is_set() and timeout_counter < 30:
+                time.sleep(0.1) # Esperar 100ms
+                timeout_counter += 1
+
+            if stop_charging_event.is_set():
+                 print("[Error] El hilo de carga no finalizó. Forzando reseteo.")
+                 stop_charging_event.clear()
+            else:
+                 print("[Menu] Hilo de carga detenido. CP listo.")
 
         elif choice == '3': # Simular Avería
             with lock:

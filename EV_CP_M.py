@@ -1,3 +1,5 @@
+# Ejecución: python EV_CP_M.py localhost:10001 localhost:9090 ALC1 (python EV_CP_M.py <ip_engine:puerto> <ip_central:puerto> <id_cp>)
+
 import sys
 import socket
 import time
@@ -83,8 +85,10 @@ def register_with_engine():
             # Enviar mensaje de registro con ID (según EV_CP_E.py)
             register_msg = f"REGISTER_ID|{cp_id_global}"
             sock_engine.sendall(register_msg.encode('utf-8'))
-            
+
+            sock_engine.settimeout(10.0) # Esperar max 10s por respuesta
             response = sock_engine.recv(1024).decode('utf-8')
+            sock_engine.settimeout(None) # Quitar timeout
             if response == "ACK_REGISTER":
                 print(f"[Engine] Monitor registrado con éxito en Engine {cp_id_global}.")
                 return True
@@ -93,6 +97,13 @@ def register_with_engine():
                 sock_engine.close()
                 sock_engine = None
                 return False
+            
+        except socket.timeout:
+            print("[Error Engine] Timeout. El Engine no respondió a tiempo (¿Problema de Kafka?).")
+            sock_engine.close()
+            sock_engine = None
+            return False
+        
         except socket.error as e:
             print(f"[Error Engine] Error durante el registro: {e}")
             sock_engine.close()
@@ -213,23 +224,17 @@ def main():
     print(f"  Central Addr: {central_addr}")
     print("-----------------------------------------")
 
-    # 2. Conexión y registro inicial con EV_Central
-    print("[Info] Intentando registro inicial con EV_Central...")
+    # 2. Conectar con Engine
+    if not register_with_engine():
+        print("[Error Fatal] No se pudo registrar en Engine. Abortando.")
+        sys.exit(1)
+    print("[Info] Registro en Engine OK (Engine confirma que está listo).")
+
+    # Paso 2: Registrar en Central
     if not register_with_central():
-        # La especificación dice "validar que el CP está operativo"
-        # Si no podemos validarlo, no continuamos.
         print("[Error Fatal] No se pudo completar el registro inicial con Central. Abortando.")
         sys.exit(1)
-        
     print("[Info] Registro inicial con Central OK.")
-    
-    # 3. Conexión inicial con EV_CP_E 
-    # No es fatal si falla, el bucle de health check lo manejará
-    print("[Info] Intentando registro inicial con EV_CP_E...")
-    if register_with_engine():
-         print("[Info] Registro inicial con Engine OK.")
-    else:
-         print("[Warning] No se pudo conectar a Engine. El bucle de monitorización lo reportará como avería.")
 
     # 4. Iniciar bucle de monitorización
     print("[Info] Iniciando bucle de monitorización de salud...")
