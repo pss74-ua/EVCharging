@@ -170,7 +170,7 @@ def health_check_loop():
                     new_status = "OK"
                     info = "Engine operational"
                 elif response == "KO":
-                    # El Engine ha reportado una avería simulada [cite: 279, 280]
+                    # El Engine ha reportado una avería simulada
                     new_status = "FAULTED"
                     info = "Engine reported KO (Simulated Fault)"
                 else:
@@ -178,7 +178,7 @@ def health_check_loop():
                     raise socket.error(f"Invalid response from Engine: {response}")
                     
             except (socket.timeout, socket.error, ConnectionResetError, BrokenPipeError) as e:
-                # No se recibió respuesta o se rompió la conexión [cite: 279]
+                # No se recibió respuesta o se rompió la conexión 
                 print(f"[Error Engine] Health check fallido: {e}")
                 sock_engine.close()
                 sock_engine = None

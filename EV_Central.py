@@ -40,8 +40,8 @@ panel_refresh_event = threading.Event()
 # Estructuras de datos (protegidas por cerrojo)
 cp_states = {}  # El estado en tiempo real de todos los CPs
 cp_states_lock = threading.Lock()
-on_going_requests = [] # Para el panel [cite: 120]
-application_messages = deque(maxlen=5) # Para el panel [cite: 138]
+on_going_requests = [] # Para el panel 
+application_messages = deque(maxlen=5) # Para el panel
 
 # --- Funciones de Persistencia y Log ---
 
@@ -66,7 +66,7 @@ def load_initial_data():
                 cp_states[cp_id] = {
                     "location": config.get("location", "N/A"),
                     "price_kwh": config.get("price_kwh", 0.50),
-                    "status": "DISCONNECTED", # Estado inicial [cite: 168]
+                    "status": "DISCONNECTED", # Estado inicial
                     # Datos de sesión (se rellenan al cargar)
                     "driver_id": None,
                     "session_kwh": 0.0,
@@ -104,7 +104,7 @@ def kafka_consumer_driver_requests():
         consumer = KafkaConsumer(
             TOPIC_DRIVER_REQUESTS,
             bootstrap_servers=kafka_bootstrap_servers,
-            auto_offset_reset='earliest', # Cambiado a 'earliest'
+            auto_offset_reset='earliest',
             group_id='central-driver-requests-group',
             value_deserializer=lambda x: json.loads(x.decode('utf-8'))
         )
@@ -387,20 +387,20 @@ def draw_panel():
             ]
             
             if status == 'IDLE' or status == 'AUTHORIZED':
-                color = Color.GREEN_BG # Activado [cite: 82]
+                color = Color.GREEN_BG # Activado
             elif status == 'CHARGING':
-                color = Color.GREEN_BG # Suministrando [cite: 86]
+                color = Color.GREEN_BG # Suministrando
                 lines.append(f"Driver {data['driver_id']}")
                 lines.append(f"{data['session_kwh']:.3f} kWh")
                 lines.append(f"{data['session_cost']:.2f} €")
             elif status == 'STOPPED':
-                color = Color.ORANGE_BG # Parado [cite: 84]
+                color = Color.ORANGE_BG # Parado 
                 lines.append("Out of Order")
             elif status == 'FAULTED':
-                color = Color.RED_BG # Averiado [cite: 98]
+                color = Color.RED_BG # Averiado 
                 lines.append("AVERIADO")
             elif status == 'DISCONNECTED':
-                color = Color.GRAY_BG # Desconectado [cite: 100]
+                color = Color.GRAY_BG # Desconectado
                 lines.append("DESCONECTADO")
                 
             cp_blocks.append((color, lines))
@@ -507,7 +507,7 @@ def main():
                     send_kafka_message(auth_topic, {"action": "STOP_COMMAND"})
                     log_message(f"Comando PARAR enviado a {cp_id}")
                     with cp_states_lock:
-                        cp_states[cp_id]['status'] = 'STOPPED' # [cite: 84]
+                        cp_states[cp_id]['status'] = 'STOPPED' 
                 else:
                     log_message(f"Comando PARAR fallido. CP {cp_id} no existe.")
 
@@ -522,7 +522,7 @@ def main():
 
             elif choice == '3': # Salir
                 log_message("Apagando EV_Central...")
-                panel_refresh_event.set() # ¡NUEVO! Detener el hilo del panel
+                panel_refresh_event.set() # Detener el hilo del panel
                 time.sleep(1.1) # Esperar a que el hilo del panel se detenga
                 break
 
@@ -531,7 +531,7 @@ def main():
 
     except KeyboardInterrupt:
         log_message("Cierre solicitado (Ctrl+C).")
-        panel_refresh_event.set() # ¡NUEVO! Detener el hilo del panel
+        panel_refresh_event.set() # Detener el hilo del panel
         time.sleep(1.1)
     finally:
         if kafka_producer:

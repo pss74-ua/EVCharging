@@ -86,20 +86,20 @@ def kafka_consumer_thread():
                 
                 print(f"\n*** NOTIFICACIÓN DE CENTRAL ***")
                 if status == "AUTHORIZED":
-                    print(f"  > Estado: ¡AUTORIZADO! [cite: 176]")
+                    print(f"  > Estado: ¡AUTORIZADO!")
                     print(f"  > CP: {cp_id}")
                     print(f"  > Info: {info}")
                     print(f"  > (Esperando a que CP_E confirme inicio de carga...)")
                 
                 elif status == "DENIED":
-                    print(f"  > Estado: DENEGADO [cite: 176]")
+                    print(f"  > Estado: DENEGADO ")
                     print(f"  > CP: {cp_id}")
                     print(f"  > Info: {info}")
                     # Como fue denegado, disparamos el evento para pedir el siguiente
                     time_to_next_request.set() 
                 
                 elif event == "CHARGE_COMPLETE":
-                    print(f"  > ¡CARGA FINALIZADA! (Ticket) [cite: 187]")
+                    print(f"  > ¡CARGA FINALIZADA! (Ticket)")
                     print(f"  > CP: {cp_id}")
                     print(f"  > Duración: {msg.get('duration_sec', 0):.2f} seg")
                     print(f"  > Consumo: {msg.get('total_kwh', 0):.3f} kWh")
@@ -107,7 +107,7 @@ def kafka_consumer_thread():
                     time_to_next_request.set() # Disparar evento para siguiente carga
 
                 elif event == "CHARGE_FAILED":
-                    print(f"  > ¡CARGA FALLIDA! [cite: 191]")
+                    print(f"  > ¡CARGA FALLIDA!")
                     print(f"  > CP: {cp_id}")
                     print(f"  > Razón: {msg.get('reason', 'N/A')}")
                     time_to_next_request.set() # Disparar evento para siguiente carga
@@ -156,12 +156,11 @@ def request_manager_thread():
         }
         send_kafka_message(TOPIC_DRIVER_REQUESTS, request_msg)
         
-        # Esperar a que el consumidor reciba 'CHARGE_COMPLETE' o 'CHARGE_FAILED'
-        # o 'DENIED' [cite: 195, 288]
+        # Esperar a que el consumidor reciba 'CHARGE_COMPLETE' o 'CHARGE_FAILED' o 'DENIED' 
         print(f"[Info] Petición enviada. Esperando finalización de la carga...")
         time_to_next_request.wait() # Bloquea hasta que el evento se dispare
         
-        # Esperar 4 segundos antes de la siguiente petición [cite: 195]
+        # Esperar 4 segundos antes de la siguiente petición
         if i < len(request_list) - 1: # Si no es la última petición
             print("\n[Info] Siguiente carga en 4 segundos...")
             time.sleep(4)

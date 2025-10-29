@@ -210,7 +210,7 @@ def kafka_consumer_thread(cp_id_arg):
                         "info": "Parado por Central"
                     })
 
-                elif action == 'RESUME_COMMAND': # Punto 13.b
+                elif action == 'RESUME_COMMAND': 
                     if state == State.STOPPED:
                         state = State.IDLE
                         print("  > COMANDO RESUME RECIBIDO. CP vuelve a estado 'Activado'.")
@@ -269,7 +269,7 @@ def charging_simulation_thread():
                 break # Salir del bucle while
             
             # Simular consumo
-            kwh_this_second = random.uniform(0.01, 0.05) # Simulación de ~36-180kW
+            kwh_this_second = random.uniform(0.01, 0.05) # Entre 10 y 50 Wh por segundo
             cost_this_second = kwh_this_second * current_price_kwh
             
             total_kwh += kwh_this_second
@@ -413,12 +413,6 @@ def main():
                     print("[Menu] No se puede desenchufar. No hay ninguna carga activa.")
                     continue # Saltar el resto del bucle
             
-            # 2. Esperar (fuera del lock) a que el hilo de carga termine.
-            # El hilo de carga llamará a .clear() al final de su ejecución.
-            # Cuando .clear() es llamado, .wait() (que espera a que esté 'set')
-            # ya no es útil.
-            # Vamos a esperar a que el evento sea 'clear' (limpiado)
-            
             print("[Menu] Esperando a que el hilo de carga finalice...")
             
             # Esperamos MÁXIMO 3 segundos a que el evento sea limpiado
@@ -441,7 +435,7 @@ def main():
                     health_status = "KO"
                     state = State.FAULTED # Poner en estado averiado
                     print("[Menu] ¡AVERÍA SIMULADA! Se reportará 'KO' al Monitor.")
-                    # [cite_start]Si estaba cargando, el hilo de carga lo detectará [cite: 191]
+
                     # Enviar notificación de estado a Central
                     send_kafka_message(TOPIC_STATUS_UPDATES, {
                         "cp_id": cp_id,
@@ -458,7 +452,7 @@ def main():
                     health_status = "OK"
                     state = State.IDLE # Vuelve a estar disponible
                     print("[Menu] Avería resuelta. Se reportará 'OK' al Monitor.")
-                    # [cite_start]Notificar a Central que la avería está resuelta [cite: 190]
+
                     send_kafka_message(TOPIC_STATUS_UPDATES, {
                         "cp_id": cp_id,
                         "timestamp": time.time(),
