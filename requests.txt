@@ -1,2 +1,3 @@
 ALC1
-MAD2
+MAD1
+VAL3

@@ -4,9 +4,21 @@
       "location": "C/Italia 5",
       "price_kwh": 0.54
     },
+    "ALC2": {
+      "location": "C/Miro 9",
+      "price_kwh": 0.56
+    },
     "ALC3": {
-      "location": "Gran Vía 2",
+      "location": "Gran Via 2",
       "price_kwh": 0.54
+    },
+    "ALC4": {
+      "location": "C/Bueno 13",
+      "price_kwh": 0.52
+    },
+    "ALC5": {
+      "location": "C/Cervantes 2",
+      "price_kwh": 0.58
     },
     "MAD1": {
       "location": "C/Arguelles",
@@ -20,6 +32,18 @@
       "location": "C/Pez 23",
       "price_kwh": 0.48
     },
+    "MAD4": {
+      "location": "C/Mayor 5",
+      "price_kwh": 0.50
+    },
+    "MAD5": {
+      "location": "C/Alcala 15",
+      "price_kwh": 0.52
+    },
+    "SEV1": {
+      "location": "Plaza Nueva",
+      "price_kwh": 0.42
+    },
     "SEV2": {
       "location": "Maestranza",
       "price_kwh": 0.40
@@ -28,17 +52,33 @@
       "location": "C/Sevilla 4",
       "price_kwh": 0.54
     },
+    "SEV4": {
+      "location": "C/Triana 8",
+      "price_kwh": 0.48
+    },
+    "SEV5": {
+      "location": "C/Betis 12",
+      "price_kwh": 0.46
+    },
     "VAL1": {
       "location": "San Javier",
       "price_kwh": 0.48
     },
-    "VAL8": {
+    "VAL2": {
       "location": "Museo Arts",
       "price_kwh": 0.50
     },
-    "COR1": {
-      "location": "Mezquita",
-      "price_kwh": 0.40
+    "VAL3": {
+      "location": "C/Cid 7",
+      "price_kwh": 0.52
+    },
+    "VAL4": {
+      "location": "Gran Plaza",
+      "price_kwh": 0.54
+    },
+    "VAL5": {
+      "location": "C/Colon 3",
+      "price_kwh": 0.56
     }
   },
   "drivers": {

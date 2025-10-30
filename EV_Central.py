@@ -381,7 +381,7 @@ def draw_panel():
             status = data['status']
             color = Color.GRAY_BG
             lines = [
-                f"{Color.BOLD}{cp_id}{Color.RESET}",
+                f"{cp_id}",
                 data['location'],
                 f"{data['price_kwh']:.2f}€/kWh"
             ]
@@ -417,7 +417,7 @@ def draw_panel():
                 else:
                     line_str += f"{color}{' ':<15}{Color.RESET} "
             print(line_str.strip())
-        print(f"{Color.GRAY_BG}{' ' * (16 * len(row_blocks) - 1)}{Color.RESET}")
+        print(f"{' ' * (16 * len(row_blocks) - 1)}")
 
 def panel_refresh_loop():
     """Redibuja el panel y los logs cada segundo."""
@@ -434,7 +434,7 @@ def panel_refresh_loop():
 
         # 3. Dibujar mensajes
         print(f"\n{Color.BOLD}*** APLICATION MESSAGES ***{Color.RESET}")
-        log_message("CENTRAL system status OK") # El latido va aquí
+        # log_message("CENTRAL system status OK") # El latido va aquí
         with cp_states_lock:
             for msg in application_messages:
                 print(msg)
@@ -444,7 +444,7 @@ def panel_refresh_loop():
         print_admin_menu()
         print("Seleccione una opción: ", end='', flush=True) # Imprime el prompt sin saltar
 
-        time.sleep(1) # Refrescar cada segundo
+        time.sleep(2) # Refrescar cada segundo
     print("Hilo de refresco del panel detenido.")
 
 def print_admin_menu():

@@ -144,7 +144,7 @@ def send_status_to_central(status, info):
 def health_check_loop():
     """
     Bucle principal que consulta al Engine cada segundo 
-    y reporta cambios de estado a Central[cite: 279].
+    y reporta cambios de estado a Central.
     """
     global sock_engine, current_status
     
@@ -156,8 +156,8 @@ def health_check_loop():
 
         if not register_with_engine():
             # No se pudo (re)conectar al Engine
-            new_status = "FAULTED"
-            info = "Engine connection lost or unresponsive"
+            print("\n[Monitor] Conexión con Engine perdida o rechazada. Cerrando Monitor...")
+            break # Salir del bucle
         else:
             # Conectado, realizar health check
             try:
