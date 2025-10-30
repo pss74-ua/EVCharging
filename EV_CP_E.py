@@ -11,7 +11,7 @@ from kafka.errors import NoBrokersAvailable
 
 # --- Constantes ---
 ENGINE_HOST = '0.0.0.0'  # Escuchar en todas las interfaces
-ENGINE_PORT = 10001      # Puerto para que se conecte el EV_CP_M (Monitor)
+# ENGINE_PORT = 10001      # Puerto para que se conecte el EV_CP_M (Monitor)
 
 # Temas de Kafka
 TOPIC_STATUS_UPDATES = "cp_status_updates"  # CP -> Central (para telemetría)
@@ -125,13 +125,13 @@ def handle_monitor_connection(conn, addr):
     finally:
         conn.close()
 
-def start_socket_server():
+def start_socket_server(port):
     """Inicia el servidor de sockets para escuchar al Monitor."""
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        server_socket.bind((ENGINE_HOST, ENGINE_PORT))
+        server_socket.bind((ENGINE_HOST, port))
         server_socket.listen()
-        print(f"[Socket] Engine escuchando conexiones del Monitor en {ENGINE_HOST}:{ENGINE_PORT}...")
+        print(f"[Socket] Engine escuchando conexiones del Monitor en {ENGINE_HOST}:{port}...")
 
         while True:
             conn, addr = server_socket.accept()
@@ -139,7 +139,7 @@ def start_socket_server():
             threading.Thread(target=handle_monitor_connection, args=(conn, addr), daemon=True).start()
             
     except OSError as e:
-        print(f"[Error Fatal] No se pudo bindear el puerto {ENGINE_PORT}. ¿Ya está en uso? {e}")
+        print(f"[Error Fatal] No se pudo bindear el puerto {port}. ¿Ya está en uso? {e}")
         sys.exit(1)
     except Exception as e:
         print(f"[Error Socket] Servidor principal falló: {e}")
@@ -342,11 +342,12 @@ def print_menu():
     if _state == State.CHARGING:
         print(f"      Suministrando a: {_driver}")
     print("-----------------------------------")
-    print("1. Simular 'Plug-in' (Enchufar vehículo)")
-    print("2. Simular 'Unplug' (Desenchufr vehículo)")
-    print("3. Simular AVERÍA (Reportar KO al Monitor)")
-    print("4. Resolver AVERÍA (Reportar OK al Monitor)")
-    print("5. Salir")
+    print("1. Iniciar Carga MANUAL (Simula pago en terminal)")
+    print("2. Simular 'Plug-in' (Tras autorización de Central)")
+    print("3. Simular 'Unplug' (Desenchufr vehículo)")
+    print("4. Simular AVERÍA (Reportar KO al Monitor)")
+    print("5. Resolver AVERÍA (Reportar OK al Monitor)")
+    print("6. Salir")
     print("-----------------------------------")
     print("Esperando acciones (Menú) o eventos (Red)...")
     
@@ -359,11 +360,18 @@ def main():
     global kafka_bootstrap_servers, kafka_producer, state, health_status, lock
     
     # 1. Validar argumentos de línea de comandos
-    if len(sys.argv) != 2:
-        print("Uso: python EV_CP_E.py <ip_broker_kafka:puerto>")
+    if len(sys.argv) != 3:
+        print("Uso: python EV_CP_E.py <ip_broker_kafka:puerto> <puerto_engine>")
         sys.exit(1)
         
     kafka_bootstrap_servers = sys.argv[1]
+
+    try:
+        engine_port = int(sys.argv[2])
+    except ValueError:
+        print("Error: El <puerto_engine> debe ser un número.")
+        sys.exit(1)
+
     print(f"[Info] Conectando a Kafka Broker en: {kafka_bootstrap_servers}")
 
     # 2. Inicializar Kafka Producer
@@ -380,7 +388,7 @@ def main():
         sys.exit(1)
 
     # 3. Iniciar hilo del servidor de sockets para el Monitor
-    threading.Thread(target=start_socket_server, daemon=True).start()
+    threading.Thread(target=start_socket_server, args=(engine_port,), daemon=True).start()
 
     # 4. Esperar a que el Monitor se conecte y registre el ID
     print("[Info] Esperando que EV_CP_M (Monitor) se conecte y registre el ID...")
@@ -391,8 +399,23 @@ def main():
     # 5. Bucle principal (Menú de simulación)
     while True:
         choice = print_menu()
+
+        if choice == '1': # Carga Manual
+            with lock:
+                if state == State.IDLE:
+                    print("[Menu] Iniciando carga manual...")
+                    state = State.CHARGING
+                    current_driver_id = "MANUAL" # Identificador para carga local
+                    # Usamos el precio por defecto o el último conocido
+                    print(f"[Menu] Usando precio: {current_price_kwh} €/kWh") 
+                    
+                    stop_charging_event.clear()
+                    # Iniciar hilo de simulación de carga
+                    threading.Thread(target=charging_simulation_thread, daemon=True).start()
+                else:
+                    print(f"[Menu] No se puede iniciar carga manual. Estado actual: {state}")
         
-        if choice == '1': # Simular Plug-in
+        elif choice == '2': # Simular Plug-in
             with lock:
                 if state == State.AUTHORIZED:
                     state = State.CHARGING
@@ -404,7 +427,7 @@ def main():
                 else:
                     print(f"[Menu] No se puede enchufar. Estado actual: {state}")
                     
-        elif choice == '2': # Simular Unplug
+        elif choice == '3': # Simular Unplug
             with lock:
                 if state == State.CHARGING:
                     print("[Menu] Simulación de 'Unplug'. Deteniendo suministro...")
@@ -427,7 +450,7 @@ def main():
             else:
                  print("[Menu] Hilo de carga detenido. CP listo.")
 
-        elif choice == '3': # Simular Avería
+        elif choice == '4': # Simular Avería
             with lock:
                 if health_status == "KO":
                     print("[Menu] La avería ya está simulada.")
@@ -444,7 +467,7 @@ def main():
                         "info": "Fault simulated by user"
                     })
 
-        elif choice == '4': # Resolver Avería
+        elif choice == '5': # Resolver Avería
             with lock:
                 if health_status == "OK":
                     print("[Menu] El CP no está en estado de avería.")
@@ -460,7 +483,7 @@ def main():
                         "info": "Fault resolved by user"
                     })
         
-        elif choice == '5': # Salir
+        elif choice == '6': # Salir
             print("[Info] Apagando EV_CP_E...")
             if kafka_producer:
                 kafka_producer.close()

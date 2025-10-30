@@ -130,7 +130,7 @@ def kafka_consumer_thread():
 # Evento para coordinar cuándo se debe enviar la siguiente petición
 time_to_next_request = threading.Event()
 
-def request_manager_thread():
+def request_batch_thread():
     """
     Gestiona el envío de peticiones de carga una por una.
     """
@@ -168,30 +168,80 @@ def request_manager_thread():
     print("\n[Info] Todas las peticiones del archivo han sido procesadas.")
     stop_event.set() # Indicar a otros hilos que terminen
 
+def run_interactive_loop():
+    """
+    Gestiona el envío de peticiones una por una de forma INTERACTIVA.
+    Se ejecuta en el hilo principal.
+    """
+    global driver_id
+    
+    while not stop_event.is_set():
+        print("\n--- Modo Interactivo EV Driver ---")
+        print("1. Solicitar Carga")
+        print("2. Salir")
+        choice = input("Seleccione una opción: ")
+        
+        if choice == '1':
+            cp_id = input("  > Introduzca el ID del CP: ").strip().upper()
+            if not cp_id:
+                print("[Error] ID de CP no puede estar vacío.")
+                continue
+
+            print(f"\n[Petición Manual] Solicitando carga en CP: {cp_id}...")
+            
+            time_to_next_request.clear()
+            
+            request_msg = {
+                "action": "REQUEST_CHARGE",
+                "driver_id": driver_id,
+                "cp_id": cp_id
+            }
+            send_kafka_message(TOPIC_DRIVER_REQUESTS, request_msg)
+            
+            print(f"[Info] Petición enviada. Esperando finalización de la carga...")
+            time_to_next_request.wait() # Espera a que termine (DENIED, COMPLETE, FAILED)
+            
+            print("\n[Info] Operación finalizada. Volviendo al menú.")
+            time.sleep(1) # Pausa breve
+
+        elif choice == '2':
+            print("[Info] Saliendo de modo interactivo.")
+            stop_event.set()
+        
+        else:
+            print("[Error] Opción no válida.")
+
 # --- Función Principal ---
 
 def main():
     global kafka_bootstrap_servers, driver_id, request_list, kafka_producer
     
     # 1. Validar argumentos
-    if len(sys.argv) != 4:
-        print("Uso: python EV_Driver.py <ip_broker_kafka:puerto> <id_cliente> <archivo_peticiones>")
+    if len(sys.argv) < 3 or len(sys.argv) > 4:
+        print("Uso: python EV_Driver.py <ip_broker_kafka:puerto> <id_cliente> [archivo_peticiones]")
         sys.exit(1)
         
     kafka_bootstrap_servers = sys.argv[1]
     driver_id = sys.argv[2]
-    requests_file = sys.argv[3]
+    
+    # Comprobar modo (Batch o Interactivo)
+    is_batch_mode = len(sys.argv) == 4
     
     print(f"--- Iniciando EV Driver ---")
     print(f"  Driver ID:  {driver_id}")
     print(f"  Broker:     {kafka_bootstrap_servers}")
-    print(f"  Archivo:    {requests_file}")
-    print("---------------------------")
-
-    # 2. Cargar peticiones
-    request_list = load_requests_from_file(requests_file)
-    if not request_list:
-        sys.exit(1)
+    
+    if is_batch_mode:
+        requests_file = sys.argv[3]
+        print(f"  Modo:       Batch (Archivo: {requests_file})")
+        print("---------------------------")
+        # 2. Cargar peticiones (solo en modo batch)
+        request_list = load_requests_from_file(requests_file)
+        if not request_list:
+            sys.exit(1)
+    else:
+        print(f"  Modo:       Interactivo")
+        print("---------------------------")
         
     # 3. Inicializar Kafka Producer
     try:
@@ -204,16 +254,22 @@ def main():
         sys.exit(1)
         
     # 4. Iniciar hilos
-    consumer = threading.Thread(target=kafka_consumer_thread, daemon=True)
-    manager = threading.Thread(target=request_manager_thread, daemon=True)
-    
+    consumer = threading.Thread(target=kafka_consumer_thread, daemon=True)    
     consumer.start()
-    manager.start()
 
     # 5. Esperar a que todo termine
     try:
-        while not stop_event.is_set():
-            time.sleep(1)
+        if is_batch_mode:
+            # Iniciar hilo de peticiones batch
+            manager = threading.Thread(target=request_batch_thread, daemon=True)
+            manager.start()
+            # Esperar a que el hilo batch ponga el stop_event
+            while not stop_event.is_set():
+                time.sleep(1)
+        else:
+            # Ejecutar el bucle interactivo en el hilo principal
+            run_interactive_loop()
+            
     except KeyboardInterrupt:
         print("\n[Info] Cierre solicitado (Ctrl+C).")
         stop_event.set()
