@@ -1,4 +1,4 @@
-# Ejecución: python EV_CP_E.py localhost:9092 (python EV_CP_E.py <broker_kafka>)
+# Ejecución: python EV_CP_E.py localhost:9092 100001 (python EV_CP_E.py <broker_kafka> <puerto monitor>)
 
 import sys
 import socket
