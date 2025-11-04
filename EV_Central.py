@@ -184,6 +184,7 @@ def kafka_consumer_driver_requests():
 def kafka_consumer_cp_updates():
     """
     Escucha telemetría y tickets de los EV_CP_E.
+    Asegura que los tickets (incluido el STOP_BY_CENTRAL) sean reenviados al Driver.
     """
     try:
         consumer = KafkaConsumer(
@@ -206,15 +207,15 @@ def kafka_consumer_cp_updates():
             
             # --- Variables para enviar FUERA del lock ---
             notify_topic = None
-            notify_msg = None
+            notify_msg = None 
             log_msg = None
             
             with cp_states_lock:
                 if cp_id not in cp_states:
-                    continue # Ignorar mensaje de un CP desconocido
+                    continue 
 
                 if message.topic == TOPIC_CP_STATUS:
-                    # Es un update de telemetría o estado
+                    # Lógica de telemetría STATUS sin cambios
                     status = msg.get('status')
                     cp_states[cp_id]['status'] = status
                     
@@ -224,34 +225,36 @@ def kafka_consumer_cp_updates():
                         cp_states[cp_id]['session_cost'] = msg.get('session_cost')
                     elif status == 'FAULTED':
                         log_msg = f"¡AVERÍA reportada por Engine {cp_id}!"
-                    elif status == 'IDLE' or status == 'STOPPED':
-                        # Limpiar datos de sesión si vuelve a IDLE o es parado
-                        cp_states[cp_id]['driver_id'] = None
-                        cp_states[cp_id]['session_kwh'] = 0.0
-                        cp_states[cp_id]['session_cost'] = 0.0
+                    
 
                 elif message.topic == TOPIC_CP_TRANSACTIONS:
                     # Es un ticket final
-                    event = msg.get('event') # CHARGE_COMPLETE o CHARGE_FAILED
+                    event = msg.get('event') 
                     driver_id = msg.get('driver_id')
                     
-                    # Resetear estado del CP
-                    # (No lo ponemos en IDLE si la política es que quede en FAULTED)
-                    if event == "CHARGE_COMPLETE":
-                         cp_states[cp_id]['status'] = 'IDLE'
-
+                    # Resetear datos de sesión
                     cp_states[cp_id]['driver_id'] = None
                     cp_states[cp_id]['session_kwh'] = 0.0
                     cp_states[cp_id]['session_cost'] = 0.0
-
-                    # Enviar ticket final al conductor
+                    
+                    # Actualizar estado si fue COMPLETO 
+                    if event == "CHARGE_COMPLETE":
+                         cp_states[cp_id]['status'] = 'IDLE' 
+                    
+                    # --- ASIGNACIÓN DE VARIABLES DE ENVÍO (Resuelve el problema de ámbito) ---
                     notify_topic = TOPIC_DRIVER_NOTIFY
-                    notify_msg = msg # Reenviar el ticket completo
-                    log_msg = f"Ticket final ({event}) enviado a {driver_id} de CP {cp_id}"
-
+                    notify_msg = msg # <-- AHORA SÍ ASIGNA EL TICKET AL VALOR CORRECTO
+                    
+                    if event == "CHARGE_STOPPED_BY_CENTRAL":
+                        log_msg = f"Parada Forzada: Ticket parcial enviado a {driver_id} de CP {cp_id}"
+                    else:
+                        log_msg = f"Ticket final ({event}) enviado a {driver_id} de CP {cp_id}"
+            
             # --- Enviar mensajes FUERA del lock ---
             if log_msg:
                 log_message(log_msg)
+            
+            # 2. Reenvío del Ticket al Driver (Desbloqueo)
             if notify_msg:
                 send_kafka_message(notify_topic, notify_msg)
 

@@ -85,6 +85,8 @@ def kafka_consumer_thread():
                 event = msg.get('event')
                 
                 print(f"\n*** NOTIFICACIÓN DE CENTRAL ***")
+                
+                # --- Lógica de Autorización/Denegación (STATUS) ---
                 if status == "AUTHORIZED":
                     print(f"  > Estado: ¡AUTORIZADO!")
                     print(f"  > CP: {cp_id}")
@@ -95,22 +97,30 @@ def kafka_consumer_thread():
                     print(f"  > Estado: DENEGADO ")
                     print(f"  > CP: {cp_id}")
                     print(f"  > Info: {info}")
-                    # Como fue denegado, disparamos el evento para pedir el siguiente
-                    time_to_next_request.set() 
+                    time_to_next_request.set() # Desbloquear para siguiente petición
                 
-                elif event == "CHARGE_COMPLETE":
-                    print(f"  > ¡CARGA FINALIZADA! (Ticket)")
+                # --- Lógica de Transacción/Ticket (EVENT) ---
+                elif event:
+                    
+                    if event == "CHARGE_COMPLETE":
+                        print(f"  > ¡CARGA FINALIZADA! (Ticket)")
+                    elif event == "CHARGE_FAILED":
+                        print(f"  > ¡CARGA FALLIDA!")
+                        print(f"  > Razón: {msg.get('reason', 'N/A')}")
+                    # *** LÍNEA AÑADIDA PARA PARADA FORZADA ***
+                    elif event == "CHARGE_STOPPED_BY_CENTRAL":
+                        print(f"  > ¡CARGA DETENIDA POR CENTRAL! (Ticket Parcial)")
+                    else:
+                        print(f"  > Evento Desconocido: {event}")
+                        
+                    # Imprimir detalles del ticket
                     print(f"  > CP: {cp_id}")
                     print(f"  > Duración: {msg.get('duration_sec', 0):.2f} seg")
                     print(f"  > Consumo: {msg.get('total_kwh', 0):.3f} kWh")
                     print(f"  > Coste Total: {msg.get('total_cost', 0):.2f} €")
-                    time_to_next_request.set() # Disparar evento para siguiente carga
-
-                elif event == "CHARGE_FAILED":
-                    print(f"  > ¡CARGA FALLIDA!")
-                    print(f"  > CP: {cp_id}")
-                    print(f"  > Razón: {msg.get('reason', 'N/A')}")
-                    time_to_next_request.set() # Disparar evento para siguiente carga
+                    
+                    # Desbloquear el Driver para el siguiente paso
+                    time_to_next_request.set() 
 
                 print("*******************************\n")
 

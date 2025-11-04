@@ -231,37 +231,46 @@ def kafka_consumer_thread(cp_id_arg):
 def charging_simulation_thread():
     """
     Simula el proceso de carga, enviando telemetría cada segundo.
-   
     """
     global state, health_status, lock, current_driver_id, current_price_kwh
     
     total_kwh = 0.0
     total_cost = 0.0
     start_time = time.time()
+    driver_on_session = current_driver_id # Capturar el driver_id antes de que el lock se libere
     
-    print(f"[Carga] Iniciando suministro para Driver {current_driver_id}...")
+    print(f"[Carga] Iniciando suministro para Driver {driver_on_session}...")
     
     while not stop_charging_event.is_set():
-        time.sleep(1) # Enviar información cada segundo
-
+        # ... (código del bucle de telemetría sin cambios) ...
+        time.sleep(1) 
+        
         status_msg = None
         kwh_this_loop = 0.0
         cost_this_loop = 0.0
         
         with lock:
-            # Comprobar si hay una avería durante el suministro
-            if health_status == "KO" or state == State.FAULTED:
-                print("[Carga] ¡AVERÍA DETECTADA! Deteniendo suministro inmediatamente.")
-                state = State.FAULTED
+            # Comprobar si hay una avería (KO lo pone el menú) o si Central ya cambió el estado a FAULTED/STOPPED
+            if health_status == "KO" or state == State.FAULTED or state == State.STOPPED:
+                # Si el estado es STOPPED, la parada viene de Central.
+                if state == State.STOPPED:
+                    reason = "Stopped by Central Command"
+                    event_type = "CHARGE_STOPPED_BY_CENTRAL"
+                    print("[Carga] ¡PARADA FORZADA! Deteniendo suministro inmediatamente.")
+                else: # FAULTED o KO
+                    reason = "CP Fault"
+                    event_type = "CHARGE_FAILED"
+                    print("[Carga] ¡AVERÍA DETECTADA! Deteniendo suministro inmediatamente.")
+                
                 stop_charging_event.set() # Forzar salida del bucle
                 
-                # Enviar notificación de finalización por avería
+                # Enviar notificación de finalización forzada/avería
                 send_kafka_message(TOPIC_TRANSACTIONS, {
                     "cp_id": cp_id,
                     "timestamp": time.time(),
-                    "event": "CHARGE_FAILED",
-                    "driver_id": current_driver_id,
-                    "reason": "CP Fault",
+                    "event": event_type,
+                    "driver_id": driver_on_session, # Usamos el driver_on_session capturado
+                    "reason": reason,
                     "duration_sec": time.time() - start_time,
                     "total_kwh": total_kwh,
                     "total_cost": total_cost
@@ -269,7 +278,7 @@ def charging_simulation_thread():
                 break # Salir del bucle while
             
             # Simular consumo
-            kwh_this_second = random.uniform(0.01, 0.05) # Entre 10 y 50 Wh por segundo
+            kwh_this_second = random.uniform(0.01, 0.05)
             cost_this_second = kwh_this_second * current_price_kwh
             
             total_kwh += kwh_this_second
@@ -280,7 +289,7 @@ def charging_simulation_thread():
                 "cp_id": cp_id,
                 "timestamp": time.time(),
                 "status": State.CHARGING,
-                "driver_id": current_driver_id,
+                "driver_id": driver_on_session,
                 "session_kwh": total_kwh,
                 "session_cost": total_cost
             }
@@ -293,23 +302,21 @@ def charging_simulation_thread():
 
         print(f"  ...Suministrando: {kwh_this_loop:.3f} kWh, {cost_this_loop:.2f} €", end='\r')
             
-    print("\n[Carga] Bucle de simulación detenido.") # Añadimos \n para limpiar
+    print("\n[Carga] Bucle de simulación detenido.") 
 
     # --- Bucle de carga finalizado (por unplug, avería o stop) ---
-    print("\n[Carga] Bucle de simulación detenido.")
     
     with lock:
-        # Si no fue una avería, fue un 'unplug' normal
+        # Si NO fue una avería y NO fue un STOPPED, fue un 'unplug' normal
         if state != State.FAULTED and state != State.STOPPED:
-            print(f"[Carga] Suministro finalizado para Driver {current_driver_id}.")
-            state = State.IDLE
+            print(f"[Carga] Suministro finalizado para Driver {driver_on_session}.")
             
-            # Enviar "ticket" final a Central
+            # Enviar "ticket" final a Central (CHARGE_COMPLETE)
             send_kafka_message(TOPIC_TRANSACTIONS, {
                 "cp_id": cp_id,
                 "timestamp": time.time(),
                 "event": "CHARGE_COMPLETE",
-                "driver_id": current_driver_id,
+                "driver_id": driver_on_session,
                 "duration_sec": time.time() - start_time,
                 "total_kwh": total_kwh,
                 "total_cost": total_cost
@@ -318,8 +325,11 @@ def charging_simulation_thread():
         # Resetear variables de sesión
         current_driver_id = None
         stop_charging_event.clear()
+        
+        # El estado solo vuelve a IDLE si no está en STOPPED ni FAULTED.
+        # Si Central nos puso en STOPPED, permanecemos en STOPPED.
         if state != State.STOPPED and state != State.FAULTED:
-            state = State.IDLE # Vuelve a estar disponible
+            state = State.IDLE 
         elif state == State.STOPPED:
             print("[Carga] CP permanece en estado STOPPED (Parado por Central).")
         else: # state == State.FAULTED
