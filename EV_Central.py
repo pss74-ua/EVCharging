@@ -16,33 +16,33 @@ from kafka import KafkaProducer, KafkaConsumer
 from kafka.errors import NoBrokersAvailable
 
 # --- Constantes ---
-# El enunciado permite usar "simples ficheros" como base de datos.
+# Se permite usar "simples ficheros" como base de datos.
 # Este fichero simula la BD de CPs, almacenando su ID, ubicación y precio.
 DATA_FILE = "data.json"
 
 # Temas de Kafka (el "Queues and event Manager" del diagrama)
 TOPIC_DRIVER_REQUESTS = "driver_requests"      # Driver -> Central (Peticiones de recarga)
 TOPIC_DRIVER_NOTIFY = "driver_notifications"   # Central -> Driver (Autorizaciones, denegaciones, tickets)
-TOPIC_CP_STATUS = "cp_status_updates"        # CP_E -> Central (Telemetría en tiempo real durante la carga)
-TOPIC_CP_TRANSACTIONS = "cp_transactions"    # CP_E -> Central (Notificación de fin de suministro/ticket)
+TOPIC_CP_STATUS = "cp_status_updates"          # CP_E -> Central (Telemetría en tiempo real durante la carga)
+TOPIC_CP_TRANSACTIONS = "cp_transactions"      # CP_E -> Central (Notificación de fin de suministro/ticket)
 # Los topics de autorización son dinámicos: "cp_auth_{cp_id}" (Central -> CP_E específico)
 
 # --- Colores ANSI para el Panel ---
 # Clase para definir los colores de fondo requeridos en el panel de monitorización
 class Color:
     GREEN_BG = '\033[42m\033[30m'  # Fondo Verde (Activado, Suministrando)
-    RED_BG = '\033[41m'           # Fondo Rojo (Averiado)
+    RED_BG = '\033[41m'            # Fondo Rojo (Averiado)
     ORANGE_BG = '\033[43m\033[30m' # Fondo Naranja (Parado / "Out of Order")
-    GRAY_BG = '\033[47m\033[30m'  # Fondo Gris (Desconectado)
-    BLUE_BG = '\033[44m'          # Fondo Azul (Para el título del panel)
+    GRAY_BG = '\033[47m\033[30m'   # Fondo Gris (Desconectado)
+    BLUE_BG = '\033[44m'           # Fondo Azul (Para el título del panel)
     RESET = '\033[0m'
     BOLD = '\033[1m'
     WHITE = '\033[97m'
 
 # --- Variables Globales ---
-kafka_producer = None            # Objeto productor de Kafka (para enviar mensajes)
-kafka_bootstrap_servers = None # IP:Puerto del broker Kafka
-socket_port = None             # Puerto TCP donde CENTRAL escuchará a los Monitors
+kafka_producer = None                   # Objeto productor de Kafka (para enviar mensajes)
+kafka_bootstrap_servers = None          # IP:Puerto del broker Kafka
+socket_port = None                      # Puerto TCP donde CENTRAL escuchará a los Monitors
 panel_refresh_event = threading.Event() # Evento para detener el hilo de refresco de la UI
 
 # Estructuras de datos (protegidas por cerrojo)
@@ -78,12 +78,12 @@ def load_initial_data():
             for cp_id, config in data.get("charge_points", {}).items():
                 cp_states[cp_id] = {
                     "location": config.get("location", "N/A"),     # Ubicación
-                    "price_kwh": config.get("price_kwh", 0.50),  # Precio
-                    "status": "DISCONNECTED", # Estado inicial
+                    "price_kwh": config.get("price_kwh", 0.50),    # Precio
+                    "status": "DISCONNECTED",                      # Estado inicial
                     # Datos de sesión (se rellenan durante la carga)
-                    "driver_id": None,       # ID del conductor
-                    "session_kwh": 0.0,    # Consumo en Kw
-                    "session_cost": 0.0    # Importe en €
+                    "driver_id": None,                             # ID del conductor
+                    "session_kwh": 0.0,                            # Consumo en Kw
+                    "session_cost": 0.0                            # Importe en €
                 }
             # (Opcional) Cargar drivers si es necesario
             # drivers = data.get("drivers", {})
@@ -95,6 +95,22 @@ def load_initial_data():
         log_message(f"[Error] {DATA_FILE} está mal formateado.")
     except Exception as e:
         log_message(f"[Error] Cargando {DATA_FILE}: {e}")
+
+def notify_system_shutdown():
+    """Envía mensajes a todos los CPs sobre el cierre de Central."""
+    
+    shutdown_msg_cp = {
+        "action": "CENTRAL_SHUTDOWN",
+        "info": "Central offline. El Engine debe detener todas las operaciones."
+    }
+    
+    # Notificar a TODOS los CPs a través de sus topics de comando
+    with cp_states_lock:
+        for cp_id in cp_states.keys():
+            auth_topic = f"cp_auth_{cp_id}"
+            send_kafka_message(auth_topic, shutdown_msg_cp)
+            
+    log_message("Notificación de cierre enviada a todos los CPs.")
 
 # --- Funciones de Kafka ---
 
@@ -434,9 +450,6 @@ def start_socket_server():
         server_socket.close()
 
 # --- Panel de Monitorización (UI) ---
-#
-# Esta sección implementa el panel de control descrito en las páginas 4 y 5 del PDF.
-#
 
 def draw_panel():
     """
@@ -456,7 +469,7 @@ def draw_panel():
 
     with cp_states_lock: # Acceso seguro a la estructura de datos
         # Ordenamos los CPs por ID para una visualización consistente
-        for cp_id, data in sorted(cp_states.items()):
+        for cp_id, data in cp_states.items():
             status = data['status']
             color = Color.GRAY_BG # Color por defecto (Desconectado)
             lines = [
@@ -471,16 +484,16 @@ def draw_panel():
             elif status == 'CHARGING':
                 color = Color.GREEN_BG # Suministrando (VERDE)
                 # Añadir datos de sesión en tiempo real
-                lines.append(f"Driver {data['driver_id']}") # Id del conductor
+                lines.append(f"Driver {data['driver_id']}")    # Id del conductor
                 lines.append(f"{data['session_kwh']:.3f} kWh") # Consumo en Kw
                 lines.append(f"{data['session_cost']:.2f} €")  # Importe en €
             elif status == 'STOPPED':
                 color = Color.ORANGE_BG # Parado (NARANJA)
-                lines.append("Out of Order") # Leyenda "Out of Order"
+                lines.append("Out of Order") 
             elif status == 'FAULTED':
                 color = Color.RED_BG # Averiado (ROJO)
                 lines.append("AVERIADO")
-            elif status == 'DISCONNECTED':
+            else:
                 color = Color.GRAY_BG # Desconectado (GRIS)
                 lines.append("DESCONECTADO")
                 
@@ -628,6 +641,10 @@ def main():
 
             elif choice == '3': # Salir
                 log_message("Apagando EV_Central...")
+
+                notify_system_shutdown()
+                time.sleep(1)
+
                 panel_refresh_event.set() # Detener el hilo del panel
                 time.sleep(1.1) # Esperar a que el hilo del panel se detenga
                 break # Salir del bucle while
@@ -637,6 +654,10 @@ def main():
 
     except KeyboardInterrupt:
         log_message("Cierre solicitado (Ctrl+C).")
+
+        notify_system_shutdown()
+        time.sleep(1)    
+
         panel_refresh_event.set() # Detener el hilo del panel
         time.sleep(1.1)
     finally:

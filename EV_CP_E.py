@@ -394,7 +394,7 @@ def print_menu():
     print("Esperando acciones (Menú) o eventos (Red)...")
     
     # 3. Pide la entrada del usuario (sin tener el cerrojo)
-    return input("Seleccione una opción: ")
+    return input("Seleccione una opción: \n")
 
 # --- Función Principal ---
 
