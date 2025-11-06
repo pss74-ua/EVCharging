@@ -2,19 +2,16 @@
 setlocal enabledelayedexpansion
 
 :: ===========================================
-:: SCRIPT: start_drivers.bat (SOLUCION FINAL)
-:: (Aisla la ruta de WindowsApps en un comando simple para START)
+:: SCRIPT: start_drivers.bat 
 :: ===========================================
 
-:: ***************************************************************
-:: ** ¡IMPORTANTE! RUTA DE PYTHON **
-:: ***************************************************************
-set PYTHON_EXE="C:\Users\jaime\AppData\Local\Microsoft\WindowsApps\python.exe"
-:: ***************************************************************
+SET PYTHON_EXE=python
+
 
 :: --- Configuracion Numerica y Strings ---
-set KAFKA_BROKER=localhost:9092
-set REQUEST_FOLDER=request_files
+:: Cambiar IP a la de la Central
+set KAFKA_BROKER=172.21.42.19:9092 
+set REQUEST_FOLDER=requests_files
 set /a MAX_REQUESTS=20
 set DRIVER_SCRIPT=EV_Driver.py
 
@@ -47,13 +44,14 @@ for /l %%i in (1, 1, %NUM_DRIVERS%) do (
     
     :: 3. Definir ID y archivo
     set DRIVER_ID=DRIVER!REQUEST_INDEX!
-    set REQUEST_FILE=!REQUEST_FOLDER!\request!REQUEST_INDEX!.txt
+    set REQUEST_FILE=!REQUEST_FOLDER!\requests!REQUEST_INDEX!.txt
     
     echo [DRIVER %%i] ID: !DRIVER_ID!, Archivo: !REQUEST_FILE!
     
-    :: 4. Ejecutar el Driver en una nueva ventana de consola
-    :: Comando final simple para START:
-    start "%DRIVER_ID%" %PYTHON_EXE% "!DRIVER_SCRIPT!" %KAFKA_BROKER% !DRIVER_ID! !REQUEST_FILE!
+    ::  4. EJECUCIÓN DEFINITIVA:
+    :: - /D "%~dp0": Inicia la nueva ventana de CMD en el directorio del script.
+    :: - cmd /k: Ejecuta y mantiene la ventana abierta para que veas el output Batch.
+    START "%DRIVER_ID%" /D "%~dp0" cmd /k "%PYTHON_EXE% !DRIVER_SCRIPT! %KAFKA_BROKER% !DRIVER_ID! !REQUEST_FILE!"
     
     :: Pausa minima
     timeout /t 0 /nobreak >nul

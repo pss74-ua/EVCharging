@@ -1,4 +1,4 @@
-# Ejecución: python EV_CP_M.py localhost:10001 localhost:9090 ALC1 (python EV_CP_M.py <ip_engine:puerto> <ip_central:puerto> <id_cp>)
+# Ejecución: python EV_CP_M.py localhost:10001 localhost:9090 CP1 (python EV_CP_M.py <ip_engine:puerto> <ip_central:puerto> <id_cp>)
 #
 # Este script implementa "EV_CP_M" (Monitor), el módulo de monitorización
 # del punto de recarga.

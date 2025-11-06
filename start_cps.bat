@@ -5,11 +5,11 @@ REM El puerto de comunicación ENGINE-MONITOR comienza en 10001 y se incrementa.
 REM --- CONFIGURACIÓN DE RED ---
 SET ENGINE_HOST=localhost
 SET ENGINE_PORT_BASE=10001
-SET CENTRAL_ADDR=localhost:9090
-SET KAFKA_BROKER=localhost:9092
+SET CENTRAL_ADDR=172.21.42.19:9090
+SET KAFKA_BROKER=172.21.42.19:9092
 
 REM *** RUTA CORREGIDA DE PYTHON (Usando la ubicación de AppData) ***
-SET PYTHON_EXE="C:\Users\jaime\AppData\Local\Microsoft\WindowsApps\python.exe" 
+SET PYTHON_EXE=python 
 
 REM Número de CPs a levantar (se toma del argumento, o 5 por defecto si no se da)
 SET NUM_CPS=%1
@@ -43,16 +43,17 @@ GOTO :EOF
     
     ECHO --^> [%1/%NUM_CPS%] Iniciando CP: %CP_ID% en puerto %ENGINE_PORT%...
     
-    REM 1. Ejecución del ENGINE: START "Título" "Ruta Python" EV_CP_E.py <broker> <puerto>
-    START "Engine %CP_ID% (Port %ENGINE_PORT%)" %PYTHON_EXE% EV_CP_E.py %KAFKA_BROKER% %ENGINE_PORT%
+    REM ** 1. EJECUCIÓN DEL ENGINE **
+    REM cmd /k ejecuta la siguiente cadena. Usamos %PYTHON_EXE% (que es 'python')
+    START "Engine %CP_ID% (Port %ENGINE_PORT%)" cmd /k "%PYTHON_EXE% EV_CP_E.py %KAFKA_BROKER% %ENGINE_PORT%"
     
     REM Esperar un momento para asegurar que el Engine está escuchando
     TIMEOUT /T 1 /NOBREAK > NUL
     
     ECHO --^> Iniciando Monitor (%CP_ID%)...
     
-    REM 2. Ejecución del MONITOR: START "Título" "Ruta Python" EV_CP_M.py <ip_engine:puerto> <ip_central:puerto> <id_cp>
-    START "Monitor %CP_ID%" %PYTHON_EXE% EV_CP_M.py %ENGINE_ADDR% %CENTRAL_ADDR% %CP_ID%
+    REM ** 2. EJECUCIÓN DEL MONITOR **
+    START "Monitor %CP_ID%" cmd /k "%PYTHON_EXE% EV_CP_M.py %ENGINE_ADDR% %CENTRAL_ADDR% %CP_ID%"
     
     REM Pequeño retardo entre el inicio de cada par
     TIMEOUT /T 1 /NOBREAK > NUL

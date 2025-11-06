@@ -1,4 +1,4 @@
-# Ejecución: python EV_Driver.py localhost:9092 23 requests.txt (python EV_Driver.py <broker_kafka> <id_cliente> <archivo_peticiones>)
+# Ejecución: python EV_Driver.py localhost:9092 DRIVER1 requests.txt (python EV_Driver.py <broker_kafka> <id_cliente> <archivo_peticiones>)
 #
 # Este script implementa "EV_Driver", la aplicación que simula al conductor
 # (Punto 143, 241).
