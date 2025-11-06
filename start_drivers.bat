@@ -10,7 +10,7 @@ SET PYTHON_EXE=python
 
 :: --- Configuracion Numerica y Strings ---
 :: Cambiar IP a la de la Central
-set KAFKA_BROKER=172.21.42.19:9092 
+set KAFKA_BROKER=localhost:9092 
 set REQUEST_FOLDER=requests_files
 set /a MAX_REQUESTS=20
 set DRIVER_SCRIPT=EV_Driver.py

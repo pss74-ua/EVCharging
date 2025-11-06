@@ -5,8 +5,8 @@ REM El puerto de comunicación ENGINE-MONITOR comienza en 10001 y se incrementa.
 REM --- CONFIGURACIÓN DE RED ---
 SET ENGINE_HOST=localhost
 SET ENGINE_PORT_BASE=10001
-SET CENTRAL_ADDR=172.21.42.19:9090
-SET KAFKA_BROKER=172.21.42.19:9092
+SET CENTRAL_ADDR=localhost:9090
+SET KAFKA_BROKER=localhost:9092
 
 REM *** RUTA CORREGIDA DE PYTHON (Usando la ubicación de AppData) ***
 SET PYTHON_EXE=python 
