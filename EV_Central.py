@@ -112,7 +112,7 @@ def send_kafka_message(topic, message):
 
 def kafka_consumer_driver_requests():
     """
-    Este hilo escucha peticiones de carga de los EV_Driver (Punto 2.b y 3 de la Mecánica).
+    Este hilo escucha peticiones de carga de los EV_Driver.
     Se suscribe al topic 'driver_requests'.
     """
     try:
@@ -142,7 +142,7 @@ def kafka_consumer_driver_requests():
             notify_msg = None
             log_msg = f"Petición de {driver_id} para {cp_id}"
             
-            # --- Sección Crítica ---
+            
             # Bloqueamos el estado para tomar una decisión de autorización
             with cp_states_lock:
                 # Añadir al panel de "ON GOING DRIVERS REQUESTS"
@@ -159,7 +159,7 @@ def kafka_consumer_driver_requests():
 
                 cp = cp_states.get(cp_id)
                 
-                # Lógica de autorización (Punto 4 de la Mecánica)
+                # Lógica de autorización 
                 # Comprobar que el CP existe Y su estado es 'IDLE' ('Activado')
                 if cp and cp['status'] == 'IDLE':
                     # AUTORIZAR
@@ -194,7 +194,7 @@ def kafka_consumer_driver_requests():
                         "info": f"CP no disponible. Estado actual: {status}"
                     }
                     log_msg = f"Denegada carga de {driver_id} en {cp_id} (Estado: {status})"
-            # --- Fin Sección Crítica ---
+            
 
             # --- Enviar mensajes FUERA del lock ---
             # Es importante enviar los mensajes fuera del cerrojo para no bloquear
@@ -218,8 +218,8 @@ def kafka_consumer_cp_updates():
     """
     try:
         consumer = KafkaConsumer(
-            TOPIC_CP_STATUS,        # Para telemetría (Punto 8)
-            TOPIC_CP_TRANSACTIONS,  # Para tickets finales (Punto 9)
+            TOPIC_CP_STATUS,        # Para telemetría 
+            TOPIC_CP_TRANSACTIONS,  # Para tickets finales 
             bootstrap_servers=kafka_bootstrap_servers,
             auto_offset_reset='earliest',
             group_id='central-cp-updates-group', # ID de grupo distinto
@@ -240,13 +240,13 @@ def kafka_consumer_cp_updates():
             notify_msg = None 
             log_msg = None
             
-            # --- Sección Crítica ---
+
             with cp_states_lock:
                 if cp_id not in cp_states:
                     continue # Ignorar mensajes de CPs desconocidos
 
                 if message.topic == TOPIC_CP_STATUS:
-                    # Es un mensaje de telemetría (Punto 8 de la Mecánica)
+                    # Es un mensaje de telemetría 
                     # El EV_CP_E envía esto cada segundo durante la carga.
                     # Lógica de telemetría STATUS sin cambios
                     status = msg.get('status')
@@ -263,7 +263,7 @@ def kafka_consumer_cp_updates():
                     
 
                 elif message.topic == TOPIC_CP_TRANSACTIONS:
-                    # Es un ticket final (Punto 9 de la Mecánica)
+                    # Es un ticket final 
                     # (CHARGE_COMPLETE, CHARGE_FAILED, CHARGE_STOPPED_BY_CENTRAL)
                     event = msg.get('event') 
                     driver_id = msg.get('driver_id')
@@ -286,11 +286,11 @@ def kafka_consumer_cp_updates():
                     notify_msg = msg # <-- AHORA SÍ ASIGNA EL TICKET AL VALOR CORRECTO
                     
                     if event == "CHARGE_STOPPED_BY_CENTRAL":
-                        # Caso especial: Parada forzada (Punto 13.a)
+                        # Caso especial: Parada forzada 
                         log_msg = f"Parada Forzada: Ticket parcial enviado a {driver_id} de CP {cp_id}"
                     else:
                         log_msg = f"Ticket final ({event}) enviado a {driver_id} de CP {cp_id}"
-            # --- Fin Sección Crítica ---
+
             
             # --- Enviar mensajes FUERA del lock ---
             if log_msg:
@@ -315,8 +315,8 @@ def handle_monitor_client(conn, addr):
     Se ejecuta en un hilo separado por cada Monitor conectado.
     
     Tiene 2 fases:
-    1. Registro: Autentica al Monitor (Punto 5 y 10).
-    2. Escucha: Recibe actualizaciones de estado (OK/FAULTED) (Punto 10).
+    1. Registro: Autentica al Monitor .
+    2. Escucha: Recibe actualizaciones de estado (OK/FAULTED) .
     """
     cp_id = None
     ack_msg = None
@@ -333,7 +333,7 @@ def handle_monitor_client(conn, addr):
         # El Monitor debe enviar un mensaje 'REGISTER_MONITOR' para identificarse
         if msg.get('type') == 'REGISTER_MONITOR':
             cp_id = msg.get('cp_id')
-            # --- Sección Crítica ---
+
             with cp_states_lock:
                 # Comprobar si el CP_ID existe en nuestra "BD" (cargada de data.json)
                 if cp_id in cp_states:
@@ -349,7 +349,7 @@ def handle_monitor_client(conn, addr):
                     ack_msg = b'NACK_UNKNOWN_CP'
                     log_msg = f"Monitor {cp_id} ({addr}) RECHAZADO (CP desconocido)"
                     cp_id = None # Marcar para desconexión
-            # --- Fin Sección Crítica ---
+ 
         else:
             ack_msg = b'NACK_EXPECTED_REGISTER'
             cp_id = None # Marcar para desconexión
@@ -378,7 +378,7 @@ def handle_monitor_client(conn, addr):
                 info = msg.get('info', '')
                 
                 # Este lock es rápido (solo actualiza estado y log), está bien.
-                # --- Sección Crítica ---
+
                 with cp_states_lock:
                     if status == 'FAULTED':
                         # El monitor reporta una avería
@@ -391,7 +391,7 @@ def handle_monitor_client(conn, addr):
                         if cp_states[cp_id]['status'] == 'FAULTED':
                             cp_states[cp_id]['status'] = 'IDLE' # Vuelve a disponible (VERDE)
                             log_message(f"Avería RESUELTA en {cp_id}. Estado -> IDLE")
-                # --- Fin Sección Crítica ---
+
                             
     except (ConnectionResetError, BrokenPipeError, json.JSONDecodeError) as e:
         log_message(f"[Socket] Conexión perdida con Monitor {cp_id if cp_id else addr}: {e}")
@@ -446,14 +446,14 @@ def draw_panel():
     """
     os.system('cls' if os.name == 'nt' else 'clear') # Limpiar la consola
     
-    # Título del Panel (similar a Figura 1)
+    # Título del Panel 
     print(f"{Color.BLUE_BG}{Color.BOLD}{Color.WHITE}" + 
           " *** SD EV CHARGING SOLUTION. MONITORIZATION PANEL *** " +
           f"{Color.RESET}")
     print("-" * 54)
     
     cp_blocks = []
-    # --- Sección Crítica ---
+
     with cp_states_lock: # Acceso seguro a la estructura de datos
         # Ordenamos los CPs por ID para una visualización consistente
         for cp_id, data in sorted(cp_states.items()):
@@ -485,9 +485,9 @@ def draw_panel():
                 lines.append("DESCONECTADO")
                 
             cp_blocks.append((color, lines))
-    # --- Fin Sección Crítica ---
 
-    # Lógica para dibujar los CPs en filas (5 por fila, como en Figura 1)
+
+    # Lógica para dibujar los CPs en filas (5 por fila)
     max_lines = max(len(b[1]) for b in cp_blocks) if cp_blocks else 0
     for i in range(0, len(cp_blocks), 5):
         row_blocks = cp_blocks[i:i+5]
@@ -536,11 +536,11 @@ def panel_refresh_loop():
 
 def print_admin_menu():
     """
-    Muestra el menú de administrador (Punto 13 de la Mecánica).
+    Muestra el menú de administrador .
     """
     print(f"\n{Color.BOLD}--- MENÚ DE ADMINISTRADOR ---{Color.RESET}")
-    print("1. Parar CP (Poner 'Out of Order')") # Punto 13.a
-    print("2. Reanudar CP (Quitar 'Out of Order')") # Punto 13.b
+    print("1. Parar CP (Poner 'Out of Order')") 
+    print("2. Reanudar CP (Quitar 'Out of Order')") 
     print("3. Salir")
 
 # --- Función Principal ---
@@ -595,12 +595,12 @@ def main():
 
     # 6. Bucle principal (Gestión del Menú de Administrador)
     # El hilo principal se queda aquí, gestionando la entrada del usuario
-    # para las opciones del Punto 13.
+    # para las opciones del .
     try:
         while True:
             choice = input() # Espera el input del admin (el prompt lo pone el hilo del panel)
 
-            if choice == '1': # Parar CP (Punto 13.a)
+            if choice == '1': # Parar CP 
                 cp_id = input("  > Introduzca ID del CP a PARAR: ").strip().upper()
                 if cp_id in cp_states:
                     # 1. Enviar comando STOP al Engine (EV_CP_E) vía Kafka
@@ -614,7 +614,7 @@ def main():
                 else:
                     log_message(f"Comando PARAR fallido. CP {cp_id} no existe.")
 
-            elif choice == '2': # Reanudar CP (Punto 13.b)
+            elif choice == '2': # Reanudar CP 
                 cp_id = input("  > Introduzca ID del CP a REANUDAR: ").strip().upper()
                 if cp_id in cp_states:
                     # 1. Enviar comando RESUME al Engine (EV_CP_E) vía Kafka

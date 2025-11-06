@@ -20,11 +20,6 @@
     "CP18": { "location": "C/Cid 7", "price_kwh": 0.52 },
     "CP19": { "location": "Gran Plaza", "price_kwh": 0.54 },
     "CP20": { "location": "C/Colon 3", "price_kwh": 0.56 }
-  },
-  "drivers": {
-    "5": { "name": "Driver 5" },
-    "23": { "name": "Driver 23" },
-    "24": { "name": "Driver 24" },
-    "234": { "name": "Driver 234" }
   }
+  
 }

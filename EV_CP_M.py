@@ -6,10 +6,10 @@
 # Funcionalidades principales:
 # 1. Conectarse a EV_Central (vía Socket) para autenticarse y registrar el CP.
 # 2. Conectarse a EV_CP_E (vía Socket) para pasarle el ID del CP.
-# 3. Entrar en un bucle de "health check" (Punto 10) que comprueba el estado
+# 3. Entrar en un bucle de "health check" que comprueba el estado
 #    del Engine (EV_CP_E) cada segundo.
 # 4. Reportar cualquier cambio de estado (avería 'KO' o recuperación 'OK')
-#    inmediatamente a EV_Central (Punto 10).
+#    inmediatamente a EV_Central .
 #
 
 import sys
@@ -45,7 +45,7 @@ def register_with_central():
     """
     Intenta conectarse y registrarse en EV_Central.
     Maneja la reconexión si es necesario.
-    Implementa la parte de "autenticar y registrar a los CP en la central" (Punto 240).
+    Implementa la parte de "autenticar y registrar a los CP en la central".
     """
     global sock_central, central_addr, cp_id_global
     
@@ -140,7 +140,7 @@ def register_with_engine():
 def send_status_to_central(status, info):
     """
     Envía una actualización de estado (avería o recuperación) a EV_Central.
-    Implementa la notificación de "En caso de avería, notificará a CENTRAL" (Punto 10).
+    Implementa la notificación de "En caso de avería, notificará a CENTRAL".
     """
     global sock_central, cp_id_global, current_status
     
@@ -172,7 +172,7 @@ def send_status_to_central(status, info):
 
 def health_check_loop():
     """
-    Bucle principal que consulta al Engine cada segundo (Punto 10).
+    Bucle principal que consulta al Engine cada segundo .
     Reporta cambios de estado (avería/recuperación) a Central.
     """
     global sock_engine, current_status
@@ -203,7 +203,7 @@ def health_check_loop():
                     new_status = "OK"
                     info = "Engine operational"
                 elif response == "KO":
-                    # El Engine ha reportado una avería simulada (Punto 10 / 280)
+                    # El Engine ha reportado una avería simulada 
                     new_status = "FAULTED"
                     info = "Engine reported KO (Simulated Fault)"
                 else:
@@ -212,7 +212,7 @@ def health_check_loop():
                     
             except (socket.timeout, socket.error, ConnectionResetError, BrokenPipeError) as e:
                 # Fallo en la comunicación con el Engine (Timeout, conexión rota, etc.)
-                # Esto se considera una AVERÍA (Punto 10 / 279)
+                # Esto se considera una AVERÍA 
                 print(f"[Error Engine] Health check fallido: {e}")
                 sock_engine.close()
                 sock_engine = None
@@ -236,21 +236,21 @@ def health_check_loop():
 def main():
     global engine_addr, central_addr, cp_id_global
     
-    # 1. Validar argumentos de línea de comandos (Punto 269)
+    # 1. Validar argumentos de línea de comandos 
     if len(sys.argv) != 4:
         print("Uso: python EV_CP_M.py <ip_engine:puerto_engine> <ip_central:puerto_central> <id_cp>")
         sys.exit(1)
         
     try:
-        # Arg 1: IP y puerto del EV_CP_E (Punto 273)
+        # Arg 1: IP y puerto del EV_CP_E 
         engine_host, engine_port = sys.argv[1].split(':')
         engine_addr = (engine_host, int(engine_port))
         
-        # Arg 2: IP y puerto del EV_Central (Punto 274)
+        # Arg 2: IP y puerto del EV_Central 
         central_host, central_port = sys.argv[2].split(':')
         central_addr = (central_host, int(central_port))
         
-        # Arg 3: ID del CP (Punto 276)
+        # Arg 3: ID del CP 
         cp_id_global = sys.argv[3]
     except ValueError:
         print("Error: Los argumentos de IP/Puerto deben estar en formato 'host:puerto'")
@@ -263,20 +263,20 @@ def main():
     print("-----------------------------------------")
 
     # 2. Conectar y registrarse en el Engine (EV_CP_E)
-    # El Monitor se conecta al Engine (Punto 278)
+    # El Monitor se conecta al Engine 
     if not register_with_engine():
         print("[Error Fatal] No se pudo registrar en Engine. Abortando.")
         sys.exit(1)
     print("[Info] Registro en Engine OK (Engine confirma que está listo).")
 
     # 3. Conectar y registrarse en Central (EV_Central)
-    # El Monitor se conecta a Central para autenticarse (Punto 277)
+    # El Monitor se conecta a Central para autenticarse 
     if not register_with_central():
         print("[Error Fatal] No se pudo completar el registro inicial con Central. Abortando.")
         sys.exit(1)
     print("[Info] Registro inicial con Central OK.")
 
-    # 4. Iniciar bucle de monitorización (Punto 10)
+    # 4. Iniciar bucle de monitorización 
     print("[Info] Iniciando bucle de monitorización de salud...")
     health_check_loop()
 

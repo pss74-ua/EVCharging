@@ -27,8 +27,8 @@ ENGINE_HOST = '0.0.0.0'  # Escuchar en todas las interfaces
 # ENGINE_PORT se pasa como argumento, no es una constante fija.
 
 # Temas de Kafka
-TOPIC_STATUS_UPDATES = "cp_status_updates"  # CP -> Central (para telemetría, Punto 8)
-TOPIC_TRANSACTIONS = "cp_transactions"      # CP -> Central (para tickets/fin de carga, Punto 9)
+TOPIC_STATUS_UPDATES = "cp_status_updates"  # CP -> Central (para telemetría)
+TOPIC_TRANSACTIONS = "cp_transactions"      # CP -> Central (para tickets/fin de carga)
 # El tema de autorizaciones (cp_auth_CP001) se construye dinámicamente
 
 # --- Variables de Estado Global ---
@@ -41,15 +41,15 @@ kafka_consumer_ready = threading.Event()
 # Estados del CP (Máquina de estados interna)
 class State:
     IDLE = "IDLE"                 # Disponible (VERDE)
-    AUTHORIZED = "AUTHORIZED"     # Autorizado, esperando plug-in (Punto 6)
+    AUTHORIZED = "AUTHORIZED"     # Autorizado, esperando plug-in 
     CHARGING = "CHARGING"         # Suministrando (VERDE + datos)
     FAULTED = "FAULTED"           # Averiado (ROJO)
-    STOPPED = "STOPPED"           # Parado por Central (NARANJA/ROJO, Punto 13.a)
+    STOPPED = "STOPPED"           # Parado por Central (NARANJA/ROJO)
 
 # Variables protegidas por cerrojo
 lock = threading.Lock() # Protege todas las variables de estado
 state = State.IDLE
-health_status = "OK"  # 'OK' o 'KO'. 'KO' simula una avería (Punto 10)
+health_status = "OK"  # 'OK' o 'KO'. 'KO' simula una avería 
 current_driver_id = None
 current_price_kwh = 0.5  # Precio por defecto, se actualiza con la autorización
 
@@ -88,7 +88,7 @@ def handle_monitor_connection(conn, addr):
         reg_data = conn.recv(1024).decode('utf-8')
         if reg_data.startswith("REGISTER_ID|"):
             received_id = reg_data.split('|')[1]
-            # --- Sección Crítica ---
+            
             with lock:
                 if cp_id is None:
                     cp_id = received_id # Establece el ID de este Engine
@@ -97,7 +97,7 @@ def handle_monitor_connection(conn, addr):
                     print(f"[Error] Monitor intentó registrar ID {received_id} pero ya somos {cp_id}")
                     conn.sendall(b"NACK_ID_MISMATCH")
                     return
-            # --- Fin Sección Crítica ---
+            
                 
             kafka_consumer_ready.clear() # Limpiar evento
 
@@ -120,7 +120,7 @@ def handle_monitor_connection(conn, addr):
             return
 
         # 2. Bucle de Health Check
-        # El Monitor enviará "HEALTH_CHECK" cada segundo (Punto 10)
+        # El Monitor enviará "HEALTH_CHECK" cada segundo 
         while True:
             data = conn.recv(1024).decode('utf-8')
             if not data:
@@ -128,10 +128,10 @@ def handle_monitor_connection(conn, addr):
                 break
             
             if data == "HEALTH_CHECK":
-                # --- Sección Crítica ---
+               
                 with lock:
-                    response = health_status  # Responder 'OK' o 'KO' (Punto 10 / 280)
-                # --- Fin Sección Crítica ---
+                    response = health_status  # Responder 'OK' o 'KO' 
+                
                 conn.sendall(response.encode('utf-8'))
             else:
                 print(f"[Socket] Mensaje no reconocido del Monitor: {data}")
@@ -209,16 +209,16 @@ def kafka_consumer_thread(cp_id_arg):
             action = msg.get('action')
             print(f"\n[KAFKA<-] Mensaje recibido de Central: {msg}")
 
-            # --- Sección Crítica ---
+         
             with lock:
-                # Caso 1: Autorización de carga (Punto 4, 5, 6)
+                # Caso 1: Autorización de carga 
                 if action == 'AUTHORIZE' and state == State.IDLE:
                     state = State.AUTHORIZED
                     current_driver_id = msg.get('driver_id')
                     current_price_kwh = msg.get('price_kwh', 0.5) # Usar precio de central
                     print(f"  > AUTORIZADO. Driver: {current_driver_id}. Esperando plug-in...")
                 
-                # Caso 2: Comando de parada de Central (Punto 13.a)
+                # Caso 2: Comando de parada de Central 
                 elif action == 'STOP_COMMAND':
                     if state == State.CHARGING:
                         stop_charging_event.set() # Detener el suministro
@@ -233,7 +233,7 @@ def kafka_consumer_thread(cp_id_arg):
                         "info": "Parado por Central"
                     })
 
-                # Caso 3: Comando de reanudación de Central (Punto 13.b)
+                # Caso 3: Comando de reanudación de Central 
                 elif action == 'RESUME_COMMAND': 
                     if state == State.STOPPED:
                         state = State.IDLE # Volver a "Activado"
@@ -245,7 +245,7 @@ def kafka_consumer_thread(cp_id_arg):
                             "status": State.IDLE,
                             "info": "Reanudado por Central"
                         })
-            # --- Fin Sección Crítica ---
+            
         except json.JSONDecodeError:
             print(f"[Error Kafka] Mensaje malformado recibido: {message.value}")
         except Exception as e:
@@ -255,7 +255,7 @@ def kafka_consumer_thread(cp_id_arg):
 
 def charging_simulation_thread():
     """
-    Simula el proceso de carga (Punto 8).
+    Simula el proceso de carga.
     Se ejecuta en un hilo separado mientras state == CHARGING.
     Envía telemetría a Central cada segundo.
     """
@@ -277,9 +277,9 @@ def charging_simulation_thread():
         kwh_this_loop = 0.0
         cost_this_loop = 0.0
         
-        # --- Sección Crítica ---
+        
         with lock:
-            # Comprobar interrupciones: Avería (Punto 10/11) o Parada Central (Punto 13.a)
+            # Comprobar interrupciones: Avería o Parada Central 
             if health_status == "KO" or state == State.FAULTED or state == State.STOPPED:
                 # Si el estado es STOPPED, la parada viene de Central.
                 if state == State.STOPPED:
@@ -313,7 +313,7 @@ def charging_simulation_thread():
             total_kwh += kwh_this_second
             total_cost += cost_this_second
             
-            # Enviar telemetría a Central (Punto 8)
+            # Enviar telemetría a Central 
             status_msg = {
                 "cp_id": cp_id,
                 "timestamp": time.time(),
@@ -325,7 +325,7 @@ def charging_simulation_thread():
             # Copia los valores para el print (fuera del lock)
             kwh_this_loop = total_kwh
             cost_this_loop = total_cost
-        # --- Fin Sección Crítica ---
+
 
         if status_msg:
             send_kafka_message(TOPIC_STATUS_UPDATES, status_msg)
@@ -337,9 +337,9 @@ def charging_simulation_thread():
 
     # --- Bucle de carga finalizado (por unplug, avería o stop) ---
     
-    # --- Sección Crítica ---
+ 
     with lock:
-        # Si NO fue una avería y NO fue un STOPPED, fue un 'unplug' normal (Punto 9)
+        # Si NO fue una avería y NO fue un STOPPED, fue un 'unplug' normal 
         if state != State.FAULTED and state != State.STOPPED:
             print(f"[Carga] Suministro finalizado para Driver {driver_on_session}.")
             
@@ -366,7 +366,6 @@ def charging_simulation_thread():
             print("[Carga] CP permanece en estado STOPPED (Parado por Central).")
         else: # state == State.FAULTED
              print("[Carga] CP permanece en estado FAULTED (Averiado).")
-    # --- Fin Sección Crítica ---
 
 def print_menu():
     """Muestra el menú de simulación del CP."""
@@ -385,11 +384,11 @@ def print_menu():
     if _state == State.CHARGING:
         print(f"      Suministrando a: {_driver}")
     print("-----------------------------------")
-    print("1. Iniciar Carga MANUAL (Simula pago en terminal, Punto 158)")
-    print("2. Simular 'Plug-in' (Tras autorización de Central, Punto 7)")
-    print("3. Simular 'Unplug' (Desenchufr vehículo, Punto 9)")
-    print("4. Simular AVERÍA (Reportar KO al Monitor, Punto 10/280)")
-    print("5. Resolver AVERÍA (Reportar OK al Monitor, Punto 10)")
+    print("1. Iniciar Carga MANUAL ")
+    print("2. Simular 'Plug-in' ")
+    print("3. Simular 'Unplug' ")
+    print("4. Simular AVERÍA ")
+    print("5. Resolver AVERÍA ")
     print("6. Salir")
     print("-----------------------------------")
     print("Esperando acciones (Menú) o eventos (Red)...")
@@ -445,7 +444,7 @@ def main():
     while True:
         choice = print_menu()
 
-        if choice == '1': # Carga Manual (Punto 158)
+        if choice == '1': # Carga Manual 
             with lock:
                 if state == State.IDLE:
                     print("[Menu] Iniciando carga manual...")
@@ -459,7 +458,7 @@ def main():
                 else:
                     print(f"[Menu] No se puede iniciar carga manual. Estado actual: {state}")
         
-        elif choice == '2': # Simular Plug-in (Punto 7)
+        elif choice == '2': # Simular Plug-in 
             with lock:
                 if state == State.AUTHORIZED:
                     state = State.CHARGING
@@ -471,7 +470,7 @@ def main():
                 else:
                     print(f"[Menu] No se puede enchufar. Estado actual: {state}")
                     
-        elif choice == '3': # Simular Unplug (Punto 9)
+        elif choice == '3': # Simular Unplug 
             with lock:
                 if state == State.CHARGING:
                     print("[Menu] Simulación de 'Unplug'. Deteniendo suministro...")
@@ -495,7 +494,7 @@ def main():
             else:
                  print("[Menu] Hilo de carga detenido. CP listo.")
 
-        elif choice == '4': # Simular Avería (Punto 10 / 280)
+        elif choice == '4': # Simular Avería 
             with lock:
                 if health_status == "KO":
                     print("[Menu] La avería ya está simulada.")
@@ -512,7 +511,7 @@ def main():
                         "info": "Fault simulated by user"
                     })
 
-        elif choice == '5': # Resolver Avería (Punto 10)
+        elif choice == '5': # Resolver Avería 
             with lock:
                 if health_status == "OK":
                     print("[Menu] El CP no está en estado de avería.")

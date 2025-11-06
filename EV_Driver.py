@@ -1,15 +1,15 @@
 # Ejecución: python EV_Driver.py localhost:9092 DRIVER1 requests.txt (python EV_Driver.py <broker_kafka> <id_cliente> <archivo_peticiones>)
 #
 # Este script implementa "EV_Driver", la aplicación que simula al conductor
-# (Punto 143, 241).
+# .
 #
 # Funcionalidades principales:
-# 1. Cliente/Productor Kafka: Envía peticiones de carga a EV_Central (Punto 145, 171).
+# 1. Cliente/Productor Kafka: Envía peticiones de carga a EV_Central .
 # 2. Consumidor Kafka: Escucha notificaciones de EV_Central (Autorizado, Denegado,
-#    Ticket final) (Punto 176, 187).
+#    Ticket final) .
 # 3. Modo Batch: Puede leer un fichero de peticiones y ejecutarlas
-#    secuencialmente (Punto 173, 287).
-# 4. Modo Interactivo: Permite solicitar cargas manualmente (Punto 287).
+#    secuencialmente .
+# 4. Modo Interactivo: Permite solicitar cargas manualmente .
 #
 
 import sys
@@ -44,7 +44,7 @@ def send_kafka_message(topic, message):
 def load_requests_from_file(filename):
     """
     Carga la lista de CPs a solicitar desde un archivo de texto (Modo Batch).
-    Implementa la lectura del fichero (Punto 173, 287).
+    Implementa la lectura del fichero .
     """
     try:
         with open(filename, 'r') as f:
@@ -69,7 +69,7 @@ def load_requests_from_file(filename):
 def kafka_consumer_thread():
     """
     Escucha notificaciones de EV_Central (Autorizado, Denegado, Ticket).
-    Este hilo corre en segundo plano y muestra los mensajes al conductor (Punto 176, 186, 187).
+    Este hilo corre en segundo plano y muestra los mensajes al conductor .
     """
     global driver_id, kafka_bootstrap_servers
     consumer = None
@@ -105,14 +105,14 @@ def kafka_consumer_thread():
                 
                 # --- Lógica de Autorización/Denegación (STATUS) ---
                 if status == "AUTHORIZED":
-                    # (Punto 176)
+                    
                     print(f"  > Estado: ¡AUTORIZADO!")
                     print(f"  > CP: {cp_id}")
                     print(f"  > Info: {info}")
                     print(f"  > (Esperando a que CP_E confirme inicio de carga...)")
                 
                 elif status == "DENIED":
-                    # (Punto 176)
+                    
                     print(f"  > Estado: DENEGADO ")
                     print(f"  > CP: {cp_id}")
                     print(f"  > Info: {info}")
@@ -120,7 +120,7 @@ def kafka_consumer_thread():
                     time_to_next_request.set() 
                 
                 # --- Lógica de Transacción/Ticket (EVENT) ---
-                # (Punto 187)
+
                 elif event:
                     
                     if event == "CHARGE_COMPLETE":
@@ -128,7 +128,7 @@ def kafka_consumer_thread():
                     elif event == "CHARGE_FAILED":
                         print(f"  > ¡CARGA FALLIDA!")
                         print(f"  > Razón: {msg.get('reason', 'N/A')}")
-                    # Manejo del ticket parcial por parada forzada (Punto 13.a)
+                    # Manejo del ticket parcial por parada forzada 
                     elif event == "CHARGE_STOPPED_BY_CENTRAL":
                         print(f"  > ¡CARGA DETENIDA POR CENTRAL! (Ticket Parcial)")
                     else:
@@ -140,7 +140,7 @@ def kafka_consumer_thread():
                     print(f"  > Consumo: {msg.get('total_kwh', 0):.3f} kWh")
                     print(f"  > Coste Total: {msg.get('total_cost', 0):.2f} €")
                     
-                    # Desbloquear el hilo principal/batch para el siguiente paso (Punto 288)
+                    # Desbloquear el hilo principal/batch para el siguiente paso 
                     time_to_next_request.set() 
 
                 print("*******************************\n")
@@ -167,7 +167,6 @@ time_to_next_request = threading.Event()
 def request_batch_thread():
     """
     Gestiona el envío de peticiones de carga una por una desde el archivo (Modo Batch).
-    (Punto 173, 287, 288)
     """
     global request_list, driver_id
     
@@ -195,7 +194,7 @@ def request_batch_thread():
         print(f"[Info] Petición enviada. Esperando finalización de la carga...")
         time_to_next_request.wait() # Bloquea hasta que el evento se dispare
         
-        # Esperar 4 segundos antes de la siguiente petición (Punto 195, 288)
+        # Esperar 4 segundos antes de la siguiente petición 
         if i < len(request_list) - 1: # Si no es la última petición
             print("\n[Info] Siguiente carga en 4 segundos...")
             time.sleep(4)
@@ -206,7 +205,7 @@ def request_batch_thread():
 def run_interactive_loop():
     """
     Gestiona el envío de peticiones una por una de forma INTERACTIVA.
-    Se ejecuta en el hilo principal. (Punto 287)
+    Se ejecuta en el hilo principal. 
     """
     global driver_id
     
@@ -252,14 +251,14 @@ def run_interactive_loop():
 def main():
     global kafka_bootstrap_servers, driver_id, request_list, kafka_producer
     
-    # 1. Validar argumentos (Punto 283)
+    # 1. Validar argumentos 
     if len(sys.argv) < 3 or len(sys.argv) > 4:
         print("Uso: python EV_Driver.py <ip_broker_kafka:puerto> <id_cliente> [archivo_peticiones]")
         sys.exit(1)
         
-    # Arg 1: Broker Kafka (Punto 285)
+    # Arg 1: Broker Kafka 
     kafka_bootstrap_servers = sys.argv[1]
-    # Arg 2: ID del Cliente/Driver (Punto 286)
+    # Arg 2: ID del Cliente/Driver 
     driver_id = sys.argv[2]
     
     # Comprobar modo (Batch o Interactivo)
@@ -271,7 +270,7 @@ def main():
     print(f"  Broker:     {kafka_bootstrap_servers}")
     
     if is_batch_mode:
-        # Arg 3: Archivo de peticiones (Punto 287)
+        # Arg 3: Archivo de peticiones 
         requests_file = sys.argv[3]
         print(f"  Modo:       Batch (Archivo: {requests_file})")
         print("---------------------------")
