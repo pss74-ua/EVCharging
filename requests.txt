@@ -1,3 +1,0 @@
-ALC1
-MAD1
-VAL3
