@@ -31,3 +31,20 @@ services:
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
       CLUSTER_ID: "gTBb85_WRXu6oQgq-brTQw"   # ID del clúster
+  
+  db:
+    image: mysql:latest # O mysql:latest
+    container_name: ev_db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: psusana    # Usar la misma contraseña de DB_CONFIG
+      MYSQL_DATABASE: ev_charging
+    ports:
+      - "3306:3306" # Puerto estándar de MySQL/MariaDB
+    volumes:
+      # Montar el script de inicialización
+      - ./init_db.sql:/docker-entrypoint-initdb.d/init_db.sql 
+      - db_data:/var/lib/mysql 
+
+volumes:
+  db_data:

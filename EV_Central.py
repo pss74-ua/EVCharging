@@ -11,14 +11,20 @@ import threading
 import json
 import time
 import os
+import mysql.connector
 from collections import deque
 from kafka import KafkaProducer, KafkaConsumer
 from kafka.errors import NoBrokersAvailable
 
+
 # --- Constantes ---
-# Se permite usar "simples ficheros" como base de datos.
-# Este fichero simula la BD de CPs, almacenando su ID, ubicación y precio.
-DATA_FILE = "data.json"
+# BD de CPs, almacenando su ID, ubicación y precio.
+DB_CONFIG = {
+    'host': 'localhost',  # Cambia a la IP/host de tu servidor de BD (ej: 'db' si usas Docker)
+    'user': 'root',
+    'password': 'psusana', # ¡IMPORTANTE: Usar la contraseña real!
+    'database': 'ev_charging'
+}
 
 # Temas de Kafka (el "Queues and event Manager" del diagrama)
 TOPIC_DRIVER_REQUESTS = "driver_requests"      # Driver -> Central (Peticiones de recarga)
@@ -64,37 +70,52 @@ def log_message(message):
         
 def load_initial_data():
     """
-    Carga la configuración de CPs y Drivers desde data.json.
-    Implementa el Paso 1 de la "Mecánica de la solución".
+    Carga la configuración de CPs desde la base de datos.
     Inicializa los CPs en estado DESCONECTADO.
     """
     global cp_states
+    db_connection = None # Inicializar a None
+    
+    # El archivo DATA_FILE ya no es necesario
+    # DATA_FILE = "data.json" 
+    
     try:
-        with open(DATA_FILE, 'r') as f:
-            data = json.load(f)
-            
+        # 1. Conectar a la base de datos
+        db_connection = mysql.connector.connect(**DB_CONFIG)
+        # Usamos dictionary=True para obtener los resultados como diccionarios (más fácil de usar)
+        cursor = db_connection.cursor(dictionary=True) 
+        
+        # 2. Ejecutar la consulta para obtener todos los CPs
+        query = "SELECT cp_id, location, price_kwh FROM charge_points"
+        cursor.execute(query)
+        cp_configs = cursor.fetchall()
+        
+        # 3. Bloquear y cargar en la estructura de memoria (cp_states)
         with cp_states_lock:
-            # Lee la configuración de cada CP del fichero
-            for cp_id, config in data.get("charge_points", {}).items():
+            for config in cp_configs:
+                cp_id = config['cp_id']
                 cp_states[cp_id] = {
-                    "location": config.get("location", "N/A"),     # Ubicación
-                    "price_kwh": config.get("price_kwh", 0.50),    # Precio
+                    "location": config['location'],
+                    # Convertir el valor de la BD (Decimal) a float de Python
+                    "price_kwh": float(config['price_kwh']), 
                     "status": "DISCONNECTED",                      # Estado inicial
-                    # Datos de sesión (se rellenan durante la carga)
-                    "driver_id": None,                             # ID del conductor
-                    "session_kwh": 0.0,                            # Consumo en Kw
-                    "session_cost": 0.0                            # Importe en €
+                    "driver_id": None,
+                    "session_kwh": 0.0,
+                    "session_cost": 0.0
                 }
-            # (Opcional) Cargar drivers si es necesario
-            # drivers = data.get("drivers", {})
-        log_message(f"Cargados {len(cp_states)} CPs desde {DATA_FILE}")
-
-    except FileNotFoundError:
-        log_message(f"[Error] No se encontró {DATA_FILE}. Iniciando con 0 CPs.")
-    except json.JSONDecodeError:
-        log_message(f"[Error] {DATA_FILE} está mal formateado.")
+        
+        log_message(f"Cargados {len(cp_states)} CPs desde la base de datos")
+        
+    except mysql.connector.Error as err:
+        log_message(f"[Error BD] Error al conectar/cargar datos: {err}")
+        log_message(f"[Error BD] Asegúrese de que la BD está activa y la configuración es correcta.")
     except Exception as e:
-        log_message(f"[Error] Cargando {DATA_FILE}: {e}")
+        log_message(f"[Error] Cargando datos: {e}")
+    finally:
+        # 4. Cerrar la conexión
+        if db_connection and db_connection.is_connected():
+            cursor.close()
+            db_connection.close()
 
 def notify_system_shutdown():
     """Envía mensajes a todos los CPs sobre el cierre de Central."""
