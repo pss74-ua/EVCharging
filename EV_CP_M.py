@@ -17,6 +17,9 @@ import socket
 import time
 import json
 import requests # Necesario para llamar al API REST del Registry
+import base64
+import hashlib
+from cryptography.fernet import Fernet
 
 # --- Variables Globales ---
 engine_addr = None  # (host, puerto) del Engine (EV_CP_E)
@@ -27,6 +30,18 @@ sock_central = None # Socket persistente para Central
 sock_engine = None  # Socket persistente para Engine
 current_status = "UNKNOWN" # Estado actual de salud (OK, FAULTED)
 symmetric_key = None # Se obtiene del Registry y se usará para hablar con Central
+
+# --- Funciones de Cifrado ---
+
+def get_cipher(hex_key):
+    """
+    Convierte la clave hexadecimal del Registry en un objeto Fernet válido para cifrar/descifrar.
+    """
+    # 1. Hasheamos la clave para asegurar que tenga 32 bytes exactos
+    key_bytes = hashlib.sha256(hex_key.encode('utf-8')).digest()
+    # 2. Codificamos en Base64 URL-safe (requisito de Fernet)
+    fernet_key = base64.urlsafe_b64encode(key_bytes)
+    return Fernet(fernet_key)
 
 # --- Funciones de Red ---
 
@@ -243,7 +258,7 @@ def deregister_from_registry_http():
     Consume el API REST del Registry para dar de BAJA el CP (DELETE).
     Borra la symmetric_key de la memoria del Monitor.
     """
-    global symmetric_key, registry_addr, cp_id_global
+    global symmetric_key, registry_addr, cp_id_global, sock_central
     
     if not symmetric_key:
         print("[Registry] No estás registrado, no puedes darte de baja.")
@@ -258,13 +273,24 @@ def deregister_from_registry_http():
     try:
         response = requests.delete(url, timeout=5)
         
-        if response.status_code == 200:
-            print(f"[Registry] ¡ÉXITO! CP dado de baja correctamente.")
-            symmetric_key = None # Borramos la clave de memoria
+        if response.status_code in [200, 404]:
+            if response.status_code == 200:
+                print(f"[Registry] ¡ÉXITO! CP dado de baja correctamente.")
+            else:
+                print("[Registry] El CP no existía en el Registry. Limpiando datos locales...")
+
+            # 1. Borrar clave de seguridad
+            symmetric_key = None 
             print(f"[Seguridad] Clave simétrica borrada.")
-        elif response.status_code == 404:
-            print("[Registry] El CP no existía en el Registry. Limpiando clave local...")
-            symmetric_key = None
+
+            # 2. Desconectar de Central
+            if sock_central:
+                try:
+                    sock_central.close()
+                except:
+                    pass
+                sock_central = None # Reseteamos la variable para que el menú se actualice
+                print("[Central] Desconectado.")
         else:
             print(f"[Registry] Error {response.status_code}: {response.text}")
             
@@ -480,6 +506,9 @@ def health_check_loop():
 
     print(f"\n[Monitor] INICIANDO MONITORIZACIÓN DE {cp_id_global}...")
     print("[Monitor] Presiona Ctrl+C para detener y volver al menú.\n")
+
+    # Obtener el cifrador con la clave simétrica
+    cipher = get_cipher(symmetric_key)
     
     try:
         while True:
@@ -518,8 +547,12 @@ def health_check_loop():
                     "status": new_status,
                     "info": info
                 }
+
+                json_str = json.dumps(msg)                                  # 1. Convertir dict a string
+                encrypted_data = cipher.encrypt(json_str.encode('utf-8'))   # 2. Cifrar
+
                 try:
-                    sock_central.sendall(json.dumps(msg).encode('utf-8'))
+                    sock_central.sendall(encrypted_data)                    # 3. Enviar bytes cifrados a Central
                 except:
                     print("[Monitor] Perdi conexión con Central.")
                     break
@@ -532,7 +565,7 @@ def health_check_loop():
 # --- Menú Principal ---
 
 def print_menu():
-    global cp_id_global, symmetric_key
+    global cp_id_global, symmetric_key, sock_engine, sock_central
     print("\n" + "="*40)
     print(f" EV CHARGING MONITOR - {cp_id_global}")
     print("="*40)
@@ -542,14 +575,21 @@ def print_menu():
         print("1. REGISTRARSE en Registry (Obtener Clave)")
     else:
         print("1. DAR DE BAJA en Registry (Borrar Clave)")
-    print("2. Conectar a Engine")
-    print("3. Autenticarse con Central")
-    print("4. Iniciar Monitorización (Bucle)")
-    print("5. Salir")
+    if sock_engine is None:
+        # Paso 2a: Si no hay Engine, obligamos a conectar primero
+        print("2. Conectar a Engine")
+    elif sock_central is None:
+        # Paso 2b: Si ya hay Engine pero no Central, ofrecemos Central
+        print("2. Autenticarse con Central")
+    else:
+        # Paso 2c: Si tenemos todo
+        print("2. [Conectado a ambos sistemas - Listo]")
+    print("3. Iniciar Monitorización (Bucle)")
+    print("4. Salir")
     print("="*40)
 
 def main():
-    global engine_addr, central_addr, registry_addr, cp_id_global
+    global engine_addr, central_addr, registry_addr, cp_id_global, sock_engine, sock_central
     
     # Argumentos: IP_Engine IP_Central IP_Registry ID_CP
     if len(sys.argv) != 5:
@@ -589,15 +629,20 @@ def main():
                 register_with_registry_http()
             
         elif choice == '2':
-            connect_to_engine()
+            if sock_engine is None:
+                # Prioridad 1: Conectar al Engine
+                connect_to_engine()
+            elif sock_central is None:
+                # Prioridad 2: Si ya tenemos Engine, intentamos Central
+                # (connect_to_central ya verifica internamente si tenemos symmetric_key)
+                connect_to_central()
+            else:
+                print("\n[Info] Ya estás conectado a Engine y Central. Puedes iniciar monitorización.")
             
         elif choice == '3':
-            connect_to_central()
-            
-        elif choice == '4':
             health_check_loop()
             
-        elif choice == '5':
+        elif choice == '4':
             print("Saliendo...")
             if sock_engine: sock_engine.close()
             if sock_central: sock_central.close()

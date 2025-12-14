@@ -2,6 +2,7 @@
 # Descripción: Módulo de Registro de CPs (vía API REST HTTP)
 # Ejemplo POST: curl -X POST http://localhost:6000/api/v1/charge_point -H "Content-Type: application/json" -d "{\"cp_id\": \"CP0\", \"location\": \"Barcelona\", \"price_kwh\": 0.35}"
 # Ejemplo DELETE: curl -X DELETE http://localhost:6000/api/v1/charge_point/CP0
+# Ejemplo GET: curl -X GET http://localhost:6000/api/v1/charge_point/CP0
 
 from flask import Flask, request, jsonify
 from flask_mysqldb import MySQL # O usar mysql.connector si lo prefieres, mantengo consistencia con tu API anterior
@@ -66,13 +67,14 @@ def register_cp():
         # 3. Insertar o Actualizar (Upsert) en la BD
         # Usamos tu estructura: cp_id, location, price_kwh, symmetric_key, is_registered
         query = """
-            INSERT INTO charge_points (cp_id, location, price_kwh, symmetric_key, is_registered)
-            VALUES (%s, %s, %s, %s, 1)
+            INSERT INTO charge_points (cp_id, location, price_kwh, symmetric_key, is_registered, status)
+            VALUES (%s, %s, %s, %s, 1, 'DISCONNECTED')
             ON DUPLICATE KEY UPDATE
                 location = VALUES(location),
                 price_kwh = VALUES(price_kwh),
                 symmetric_key = VALUES(symmetric_key),
-                is_registered = 1
+                is_registered = 1,
+                status = 'DISCONNECTED'
         """
         cursor.execute(query, (cp_id, location, price, symmetric_key))
         conn.commit()
@@ -108,7 +110,7 @@ def deregister_cp(cp_id):
         cursor = conn.cursor()
 
         # Baja lógica: Quitamos registro y borramos credenciales
-        query = "UPDATE charge_points SET is_registered = 0, symmetric_key = NULL WHERE cp_id = %s"
+        query = "UPDATE charge_points SET is_registered = 0, symmetric_key = NULL, status = 'DISCONNECTED' WHERE cp_id = %s"
         
         cursor.execute(query, (cp_id,))
         conn.commit()
