@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>EV Charging Dashboard</title>
+    <style>
+        body { font-family: sans-serif; background: #f0f2f5; padding: 20px; }
+        h1 { text-align: center; color: #333; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); text-align: center; }
+        
+        /* Colores según estado */
+        .status-IDLE { border-top: 5px solid #28a745; } /* Verde */
+        .status-CHARGING { border-top: 5px solid #007bff; background-color: #e6f2ff; } /* Azul */
+        .status-AUTHORIZED { border-top: 5px solid #17a2b8; } /* Cyan */
+        .status-FAULTED { border-top: 5px solid #dc3545; background-color: #ffe6e6; } /* Rojo */
+        .status-STOPPED { border-top: 5px solid #fd7e14; } /* Naranja */
+        .status-DISCONNECTED { border-top: 5px solid #6c757d; opacity: 0.7; } /* Gris */
+
+        .badge { display: inline-block; padding: 5px 10px; border-radius: 15px; color: white; font-weight: bold; font-size: 0.9em; }
+        .bg-IDLE { background: #28a745; }
+        .bg-CHARGING { background: #007bff; }
+        .bg-FAULTED { background: #dc3545; }
+        .bg-STOPPED { background: #fd7e14; }
+        .bg-DISCONNECTED { background: #6c757d; }
+    </style>
+</head>
+<body>
+
+    <h1>Panel de Control - Charging Points</h1>
+    <div id="cp-container" class="grid">
+        </div>
+
+    <script>
+        // URL de tu API Central
+        const API_URL = 'http://localhost:5000/api/v1/status';
+
+        async function fetchStatus() {
+            try {
+                const response = await fetch(API_URL);
+                const data = await response.json();
+                
+                const container = document.getElementById('cp-container');
+                container.innerHTML = ''; // Limpiar
+
+                if(data.cp_list) {
+                    data.cp_list.forEach(cp => {
+                        // Determinar clase CSS basada en estado
+                        const statusClass = `status-${cp.status || 'DISCONNECTED'}`;
+                        const bgClass = `bg-${cp.status || 'DISCONNECTED'}`;
+                        
+                        const html = `
+                            <div class="card ${statusClass}">
+                                <h2>${cp.cp_id}</h2>
+                                <p><strong>${cp.location}</strong></p>
+                                <span class="badge ${bgClass}">${cp.status || 'OFFLINE'}</span>
+                                <p>${cp.price_kwh} €/kWh</p>
+                            </div>
+                        `;
+                        container.innerHTML += html;
+                    });
+                }
+            } catch (error) {
+                console.error('Error fetching data:', error);
+            }
+        }
+
+        // Refrescar cada 2 segundos
+        setInterval(fetchStatus, 2000);
+        fetchStatus();
+    </script>
+</body>
+</html>

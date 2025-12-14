@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from flask_mysqldb import MySQL # Librería para la conexión a MySQL
 from flask_cors import CORS
 #import mysql.connector as db_connector# Conector de Python a MySQL
@@ -8,6 +8,7 @@ import mysql.connector
 
 # --- 1. INICIALIZACIÓN DE FLASK ---
 app = Flask(__name__)
+CORS(app)  # Habilitar CORS para todas las rutas y orígenes
 # Habilitar CORS para permitir el acceso desde el navegador (file:///)
 CORS(app)
 
@@ -21,6 +22,12 @@ app.config['MYSQL_CURSORCLASS'] = 'DictCursor'
 mysql = MySQL(app)
 print("Conexión a BD configurada. Lista para usarse.")
 
+# Ruta para servir el dashboard HTML
+@app.route('/')
+def home():
+    """Sirve el archivo HTML del dashboard"""
+    return render_template('dashboard.html')
+
 # Decorador para definir la ruta y el método HTTP
 @app.route('/api/v1/status', methods=['GET'])
 def get_system_status():
@@ -32,7 +39,8 @@ def get_system_status():
         cur = mysql.connection.cursor()
         
         # 2. Ejecutar la consulta SQL
-        query = 'SELECT cp_id, location, price_kwh, is_registered, symmetric_key FROM charge_points'
+        # query = 'SELECT cp_id, location, price_kwh, is_registered, symmetric_key FROM charge_points'
+        query = 'SELECT cp_id, location, price_kwh, is_registered, symmetric_key, status FROM charge_points'
         cur.execute(query)
         
         # 3. Obtener todos los resultados (AHORA SON DICCIONARIOS)

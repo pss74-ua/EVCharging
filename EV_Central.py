@@ -1,9 +1,5 @@
-# Ejecución: python EV_Central.py 9090 localhost:9092 (python EV_Central.py <puerto_socket> <broker_kafka>)
-#
-# Este script implementa "EV_Central", el componente principal del sistema.
-# Es el cerebro que gestiona la lógica de negocio, monitoriza los CPs y
-# se comunica con los Drivers (vía Kafka) y los Monitors de los CPs (vía Sockets).
-#
+# Ejecución: python EV_Central.py 9090 localhost:9092
+# Descripción: Backend Central. Gestiona lógica, seguridad y actualiza la BD para la vista web.
 
 import sys
 import socket
@@ -12,683 +8,380 @@ import json
 import time
 import os
 import mysql.connector
+import webbrowser
 from collections import deque
 from kafka import KafkaProducer, KafkaConsumer
 from kafka.errors import NoBrokersAvailable
+import base64
+import hashlib
+from cryptography.fernet import Fernet
 
 
-# --- Constantes ---
-# BD de CPs, almacenando su ID, ubicación y precio.
+# --- CONFIGURACIÓN BD ---
 DB_CONFIG = {
-    'host': 'localhost',  # Cambia a la IP/host de tu servidor de BD (ej: 'db' si usas Docker)
+    'host': 'localhost',
     'user': 'root',
-    'password': 'psusana', # ¡IMPORTANTE: Usar la contraseña real!
+    'password': 'psusana', 
     'database': 'ev_charging'
 }
 
-# Temas de Kafka (el "Queues and event Manager" del diagrama)
-TOPIC_DRIVER_REQUESTS = "driver_requests"      # Driver -> Central (Peticiones de recarga)
-TOPIC_DRIVER_NOTIFY = "driver_notifications"   # Central -> Driver (Autorizaciones, denegaciones, tickets)
-TOPIC_CP_STATUS = "cp_status_updates"          # CP_E -> Central (Telemetría en tiempo real durante la carga)
-TOPIC_CP_TRANSACTIONS = "cp_transactions"      # CP_E -> Central (Notificación de fin de suministro/ticket)
-# Los topics de autorización son dinámicos: "cp_auth_{cp_id}" (Central -> CP_E específico)
+# --- TEMAS KAFKA ---
+TOPIC_DRIVER_REQUESTS = "driver_requests"
+TOPIC_DRIVER_NOTIFY = "driver_notifications"
+TOPIC_CP_STATUS = "cp_status_updates"
+TOPIC_CP_TRANSACTIONS = "cp_transactions"
 
-# --- Colores ANSI para el Panel ---
-# Clase para definir los colores de fondo requeridos en el panel de monitorización
-class Color:
-    GREEN_BG = '\033[42m\033[30m'  # Fondo Verde (Activado, Suministrando)
-    RED_BG = '\033[41m'            # Fondo Rojo (Averiado)
-    ORANGE_BG = '\033[43m\033[30m' # Fondo Naranja (Parado / "Out of Order")
-    GRAY_BG = '\033[47m\033[30m'   # Fondo Gris (Desconectado)
-    BLUE_BG = '\033[44m'           # Fondo Azul (Para el título del panel)
-    RESET = '\033[0m'
-    BOLD = '\033[1m'
-    WHITE = '\033[97m'
+# --- VARIABLES GLOBALES ---
+kafka_producer = None
+kafka_bootstrap_servers = None
+socket_port = None
+stop_event = threading.Event()
 
-# --- Variables Globales ---
-kafka_producer = None                   # Objeto productor de Kafka (para enviar mensajes)
-kafka_bootstrap_servers = None          # IP:Puerto del broker Kafka
-socket_port = None                      # Puerto TCP donde CENTRAL escuchará a los Monitors
-panel_refresh_event = threading.Event() # Evento para detener el hilo de refresco de la UI
-
-# Estructuras de datos (protegidas por cerrojo)
-# cp_states es la "BD en memoria" que mantiene el estado en tiempo real de todos los CPs.
-# Es la fuente de verdad para el panel de monitorización.
-cp_states = {}
-# cp_states_lock es crucial porque múltiples hilos (Socket, Kafka, UI) acceden a cp_states simultáneamente.
+# Estado en memoria (se sincroniza con BD)
+cp_states = {} 
 cp_states_lock = threading.Lock()
-on_going_requests = [] # Almacena las últimas peticiones para el panel
-application_messages = deque(maxlen=5) # Almacena los últimos mensajes de log para el panel
 
-# --- Funciones de Persistencia y Log ---
+# --- Funciones de Cifrado ---
 
-def log_message(message):
-    """Añade un mensaje al log de la aplicación para el panel (*** APLICATION MESSAGES ***)."""
-    with cp_states_lock:
-        timestamp = time.strftime('%H:%M:%S')
-        application_messages.append(f"[{timestamp}] {message}")
-        
-def load_initial_data():
+def get_cipher(hex_key):
     """
-    Carga la configuración de CPs desde la base de datos.
-    Inicializa los CPs en estado DESCONECTADO.
+    Convierte la clave hexadecimal del Registry en un objeto Fernet válido para cifrar/descifrar.
     """
-    global cp_states
-    db_connection = None # Inicializar a None
-    
-    # El archivo DATA_FILE ya no es necesario
-    # DATA_FILE = "data.json" 
-    
+    # 1. Hasheamos la clave para asegurar que tenga 32 bytes exactos
+    key_bytes = hashlib.sha256(hex_key.encode('utf-8')).digest()
+    # 2. Codificamos en Base64 URL-safe (requisito de Fernet)
+    fernet_key = base64.urlsafe_b64encode(key_bytes)
+    return Fernet(fernet_key)
+
+# --- FUNCIONES DE BASE DE DATOS ---
+
+def get_db_connection():
     try:
-        # 1. Conectar a la base de datos
-        db_connection = mysql.connector.connect(**DB_CONFIG)
-        # Usamos dictionary=True para obtener los resultados como diccionarios (más fácil de usar)
-        cursor = db_connection.cursor(dictionary=True) 
-        
-        # 2. Ejecutar la consulta para obtener todos los CPs
-        query = "SELECT cp_id, location, price_kwh FROM charge_points"
-        cursor.execute(query)
-        cp_configs = cursor.fetchall()
-        
-        # 3. Bloquear y cargar en la estructura de memoria (cp_states)
-        with cp_states_lock:
-            for config in cp_configs:
-                cp_id = config['cp_id']
-                cp_states[cp_id] = {
-                    "location": config['location'],
-                    # Convertir el valor de la BD (Decimal) a float de Python
-                    "price_kwh": float(config['price_kwh']), 
-                    "status": "DISCONNECTED",                      # Estado inicial
-                    "driver_id": None,
-                    "session_kwh": 0.0,
-                    "session_cost": 0.0
-                }
-        
-        log_message(f"Cargados {len(cp_states)} CPs desde la base de datos")
-        
-    except mysql.connector.Error as err:
-        log_message(f"[Error BD] Error al conectar/cargar datos: {err}")
-        log_message(f"[Error BD] Asegúrese de que la BD está activa y la configuración es correcta.")
+        return mysql.connector.connect(**DB_CONFIG)
     except Exception as e:
-        log_message(f"[Error] Cargando datos: {e}")
+        print(f"[Error BD] {e}")
+        return None
+
+def update_cp_status_in_db(cp_id, status, driver_id=None):
+    """
+    Actualiza el estado en la BD para que el Front (HTML) lo vea.
+    """
+    conn = get_db_connection()
+    if not conn: return
+    try:
+        cursor = conn.cursor()
+        # Actualizamos estado y driver (si hay carga)
+        query = "UPDATE charge_points SET status = %s WHERE cp_id = %s"
+        cursor.execute(query, (status, cp_id))
+        conn.commit()
+        cursor.close()
+    except Exception as e:
+        print(f"[BD Error] Al actualizar status de {cp_id}: {e}")
     finally:
-        # 4. Cerrar la conexión
-        if db_connection and db_connection.is_connected():
-            cursor.close()
-            db_connection.close()
+        conn.close()
 
-def notify_system_shutdown():
-    """Envía mensajes a todos los CPs sobre el cierre de Central."""
-    
-    shutdown_msg_cp = {
-        "action": "CENTRAL_SHUTDOWN",
-        "info": "Central offline. El Engine debe detener todas las operaciones."
-    }
-    
-    # Notificar a TODOS los CPs a través de sus topics de comando
-    with cp_states_lock:
-        for cp_id in cp_states.keys():
-            auth_topic = f"cp_auth_{cp_id}"
-            send_kafka_message(auth_topic, shutdown_msg_cp)
-            
-    log_message("Notificación de cierre enviada a todos los CPs.")
+def verify_cp_registration(cp_id):
+    """
+    Verifica si el CP está registrado y obtiene su CLAVE SIMÉTRICA.
+    Requisito de Seguridad Release 2.
+    """
+    conn = get_db_connection()
+    if not conn: return False, None
+    try:
+        cursor = conn.cursor(dictionary=True)
+        query = "SELECT is_registered, symmetric_key, price_kwh FROM charge_points WHERE cp_id = %s"
+        cursor.execute(query, (cp_id,))
+        row = cursor.fetchone()
+        cursor.close()
+        
+        if row and row['is_registered'] == 1:
+            return True, row # Devuelve datos incluyendo la clave
+        return False, None
+    except Exception as e:
+        print(f"[BD Error] Verificando registro: {e}")
+        return False, None
+    finally:
+        conn.close()
 
-# --- Funciones de Kafka ---
+# --- UTILIDADES KAFKA ---
 
 def send_kafka_message(topic, message):
-    """Función helper para enviar un mensaje JSON a un topic de Kafka."""
-    global kafka_producer
     try:
-        # El productor se inicializa en main()
         kafka_producer.send(topic, value=message)
-        kafka_producer.flush() # Asegura que el mensaje se envíe inmediatamente
+        kafka_producer.flush()
     except Exception as e:
-        log_message(f"[Error Kafka] No se pudo enviar a {topic}: {e}")
+        print(f"[Kafka Error] En envío a {topic}: {e}")
 
-# --- Hilos Consumidores de Kafka ---
+# --- CONSUMIDORES KAFKA ---
 
 def kafka_consumer_driver_requests():
-    """
-    Este hilo escucha peticiones de carga de los EV_Driver.
-    Se suscribe al topic 'driver_requests'.
-    """
+    """Escucha peticiones de carga de Drivers."""
     try:
         consumer = KafkaConsumer(
             TOPIC_DRIVER_REQUESTS,
             bootstrap_servers=kafka_bootstrap_servers,
-            auto_offset_reset='earliest', # Lee desde el principio si es un consumidor nuevo
-            group_id='central-driver-requests-group', # ID de grupo para Kafka
-            value_deserializer=lambda x: json.loads(x.decode('utf-8')) # Deserializa JSON
+            group_id='central-logic-group',
+            value_deserializer=lambda x: json.loads(x.decode('utf-8'))
         )
-    except Exception as e:
-        log_message(f"[Error Kafka] No se pudo iniciar consumidor de Drivers: {e}")
-        return
-
-    log_message("Consumidor Kafka (Driver Requests) iniciado.")
-    # Bucle infinito para procesar mensajes
-    for message in consumer:
-        try:
+        print("[Kafka] Escuchando Peticiones de Drivers...")
+        for message in consumer:
+            if stop_event.is_set(): break
+            
             msg = message.value
             cp_id = msg.get('cp_id')
             driver_id = msg.get('driver_id')
-
-            # --- Variables para enviar FUERA del lock ---
-            auth_topic = None
-            auth_msg = None
-            notify_topic = TOPIC_DRIVER_NOTIFY
-            notify_msg = None
-            log_msg = f"Petición de {driver_id} para {cp_id}"
             
+            # Lógica de autorización
+            auth_success = False
+            price = 0.50
             
-            # Bloqueamos el estado para tomar una decisión de autorización
             with cp_states_lock:
-                # Añadir al panel de "ON GOING DRIVERS REQUESTS"
-                on_going_requests.append({
-                    "date": time.strftime('%d/%m/%y'),
-                    "time": time.strftime('%H:%M:%S'),
-                    "user_id": driver_id,
-                    "cp_id": cp_id
+                # Verificamos estado en memoria
+                state_info = cp_states.get(cp_id, {})
+                if state_info.get('status') == 'IDLE':
+                    auth_success = True
+                    price = state_info.get('price_kwh', 0.50)
+                    # Cambio de estado provisional
+                    cp_states[cp_id]['status'] = 'AUTHORIZED'
+                    update_cp_status_in_db(cp_id, 'AUTHORIZED')
+
+            if auth_success:
+                print(f"[Lógica] AUTORIZADO Driver {driver_id} en {cp_id}")
+                # 1. Avisar al Engine (CP)
+                send_kafka_message(f"cp_auth_{cp_id}", {
+                    "action": "AUTHORIZE", 
+                    "driver_id": driver_id,
+                    "price_kwh": price
                 })
-                
-                # Limitar historial de peticiones (mostramos solo las 5 últimas)
-                if len(on_going_requests) > 5:
-                    on_going_requests.pop(0)
+                # 2. Avisar al Driver
+                send_kafka_message(TOPIC_DRIVER_NOTIFY, {
+                    "driver_id": driver_id, "status": "AUTHORIZED", 
+                    "cp_id": cp_id, "info": "Puede conectar el vehículo"
+                })
+            else:
+                print(f"[Lógica] DENEGADO Driver {driver_id} en {cp_id}")
+                send_kafka_message(TOPIC_DRIVER_NOTIFY, {
+                    "driver_id": driver_id, "status": "DENIED", 
+                    "cp_id": cp_id, "info": "CP no disponible"
+                })
 
-                cp = cp_states.get(cp_id)
-                
-                # Lógica de autorización 
-                # Comprobar que el CP existe Y su estado es 'IDLE' ('Activado')
-                if cp and cp['status'] == 'IDLE':
-                    # AUTORIZAR
-                    cp['status'] = 'AUTHORIZED' # Estado interno (esperando plug-in)
-                    price = cp['price_kwh']
-                    
-                    # 1. Preparar mensaje para el EV_CP_E (Engine)
-                    # Se envía a un topic específico de ese CP
-                    auth_topic = f"cp_auth_{cp_id}"
-                    auth_msg = {
-                        "action": "AUTHORIZE",
-                        "driver_id": driver_id,
-                        "price_kwh": price
-                    }
-                    # 2. Preparar notificación para el EV_Driver
-                    notify_msg = {
-                        "driver_id": driver_id,
-                        "status": "AUTHORIZED",
-                        "cp_id": cp_id,
-                        "info": f"Autorizado. Precio: {price}€/kWh. Conecte el vehículo."
-                    }
-                    log_msg = f"Autorizada carga de {driver_id} en {cp_id}"
-                
-                else:
-                    # DENEGAR
-                    status = cp['status'] if cp else 'UNKNOWN'
-                    # 1. Preparar notificación de denegación para el EV_Driver
-                    notify_msg = {
-                        "driver_id": driver_id,
-                        "status": "DENIED",
-                        "cp_id": cp_id,
-                        "info": f"CP no disponible. Estado actual: {status}"
-                    }
-                    log_msg = f"Denegada carga de {driver_id} en {cp_id} (Estado: {status})"
-            
-
-            # --- Enviar mensajes FUERA del lock ---
-            # Es importante enviar los mensajes fuera del cerrojo para no bloquear
-            # el procesamiento mientras se realizan las (lentas) operaciones de red/Kafka.
-            log_message(log_msg)
-            if auth_msg:
-                # Envía la autorización al Engine (EV_CP_E)
-                send_kafka_message(auth_topic, auth_msg)
-            if notify_msg:
-                # Envía la notificación (AUTORIZADO o DENEGADO) al Driver
-                send_kafka_message(notify_topic, notify_msg)
-
-        except Exception as e:
-            log_message(f"[Error Proc. Petición] {e}")
+    except Exception as e:
+        print(f"[Kafka Error] Consumer Requests: {e}")
 
 def kafka_consumer_cp_updates():
-    """
-    Escucha telemetría (TOPIC_CP_STATUS) y tickets (TOPIC_CP_TRANSACTIONS)
-    provenientes de los EV_CP_E.
-    Asegura que los tickets (incluido el STOP_BY_CENTRAL) sean reenviados al Driver.
-    """
+    """Escucha telemetría y tickets de los CPs."""
     try:
         consumer = KafkaConsumer(
-            TOPIC_CP_STATUS,        # Para telemetría 
-            TOPIC_CP_TRANSACTIONS,  # Para tickets finales 
+            TOPIC_CP_STATUS, TOPIC_CP_TRANSACTIONS,
             bootstrap_servers=kafka_bootstrap_servers,
-            auto_offset_reset='earliest',
-            group_id='central-cp-updates-group', # ID de grupo distinto
+            group_id='central-updates-group',
             value_deserializer=lambda x: json.loads(x.decode('utf-8'))
         )
-    except Exception as e:
-        log_message(f"[Error Kafka] No se pudo iniciar consumidor de CPs: {e}")
-        return
-
-    log_message("Consumidor Kafka (CP Updates) iniciado.")
-    for message in consumer:
-        try:
+        print("[Kafka] Escuchando Updates de CPs...")
+        for message in consumer:
+            if stop_event.is_set(): break
             msg = message.value
             cp_id = msg.get('cp_id')
-            
-            # --- Variables para enviar FUERA del lock ---
-            notify_topic = None
-            notify_msg = None 
-            log_msg = None
-            
 
             with cp_states_lock:
-                if cp_id not in cp_states:
-                    continue # Ignorar mensajes de CPs desconocidos
+                if cp_id not in cp_states: continue # Ignorar desconocidos
 
                 if message.topic == TOPIC_CP_STATUS:
-                    # Es un mensaje de telemetría 
-                    # El EV_CP_E envía esto cada segundo durante la carga.
-                    # Lógica de telemetría STATUS sin cambios
-                    status = msg.get('status')
-                    cp_states[cp_id]['status'] = status
+                    # Telemetría
+                    new_status = msg.get('status')
+                    old_status = cp_states[cp_id].get('status')
                     
-                    if status == 'CHARGING':
-                        # Actualizar datos de sesión para el panel en tiempo real
-                        cp_states[cp_id]['driver_id'] = msg.get('driver_id')
-                        cp_states[cp_id]['session_kwh'] = msg.get('session_kwh')
-                        cp_states[cp_id]['session_cost'] = msg.get('session_cost')
-                    elif status == 'FAULTED':
-                        # El Engine también puede reportar averías (ej. simulación menú)
-                        log_msg = f"¡AVERÍA reportada por Engine {cp_id}!"
-                    
+                    cp_states[cp_id]['status'] = new_status
+                    # Solo actualizamos BD si cambia el estado (para no saturar)
+                    if new_status != old_status:
+                        update_cp_status_in_db(cp_id, new_status)
 
                 elif message.topic == TOPIC_CP_TRANSACTIONS:
-                    # Es un ticket final 
-                    # (CHARGE_COMPLETE, CHARGE_FAILED, CHARGE_STOPPED_BY_CENTRAL)
-                    event = msg.get('event') 
-                    driver_id = msg.get('driver_id')
+                    # Fin de carga / Ticket
+                    event = msg.get('event')
+                    print(f"[Transacción] Ticket recibido: {event} en {cp_id}")
                     
-                    # Resetear datos de sesión
-                    # Limpiar datos de sesión del CP en el panel
-                    cp_states[cp_id]['driver_id'] = None
-                    cp_states[cp_id]['session_kwh'] = 0.0
-                    cp_states[cp_id]['session_cost'] = 0.0
-                    
-                    # Actualizar estado si fue COMPLETO 
-                    # El CP vuelve a estado IDLE (disponible)
+                    # Restaurar estado a IDLE si acabó
                     if event == "CHARGE_COMPLETE":
-                         cp_states[cp_id]['status'] = 'IDLE' # "El CP volverá al estado de reposo"
+                        cp_states[cp_id]['status'] = 'IDLE'
+                        update_cp_status_in_db(cp_id, 'IDLE')
                     
-                    # --- ASIGNACIÓN DE VARIABLES DE ENVÍO (Resuelve el problema de ámbito) ---
-                    # Preparar el reenvío del ticket al Driver
-                    # El Driver está escuchando en TOPIC_DRIVER_NOTIFY
-                    notify_topic = TOPIC_DRIVER_NOTIFY
-                    notify_msg = msg # <-- AHORA SÍ ASIGNA EL TICKET AL VALOR CORRECTO
-                    
-                    if event == "CHARGE_STOPPED_BY_CENTRAL":
-                        # Caso especial: Parada forzada 
-                        log_msg = f"Parada Forzada: Ticket parcial enviado a {driver_id} de CP {cp_id}"
-                    else:
-                        log_msg = f"Ticket final ({event}) enviado a {driver_id} de CP {cp_id}"
+                    # Reenviar ticket al driver
+                    send_kafka_message(TOPIC_DRIVER_NOTIFY, msg)
 
-            
-            # --- Enviar mensajes FUERA del lock ---
-            if log_msg:
-                log_message(log_msg)
-            
-            # 2. Reenvío del Ticket al Driver (Desbloqueo)
-            if notify_msg:
-                send_kafka_message(notify_topic, notify_msg)
+    except Exception as e:
+        print(f"[Kafka Error] Consumer Updates: {e}")
 
-        except Exception as e:
-            log_message(f"[Error Proc. Update CP] {e}")
+# --- SERVIDOR SOCKETS (Comunicación Monitor) ---
 
-# --- Hilos del Servidor de Sockets (para Monitors) ---
-#
-# Esta sección gestiona la comunicación directa con EV_CP_M (Monitor)
-# como se ve en el diagrama (Sockets (Status & Autentication)).
-#
-
-def handle_monitor_client(conn, addr):
+def handle_monitor(conn, addr):
     """
-    Gestiona la conexión de un EV_CP_M (Monitor).
-    Se ejecuta en un hilo separado por cada Monitor conectado.
-    
-    Tiene 2 fases:
-    1. Registro: Autentica al Monitor .
-    2. Escucha: Recibe actualizaciones de estado (OK/FAULTED) .
+    Gestiona conexión con Monitor. Implementa seguridad Release 2.
     """
     cp_id = None
-    ack_msg = None
-    log_msg = None
-    try:
-        # 1. Proceso de Registro
-        data = conn.recv(1024).decode('utf-8')
-        if not data:
-            print(f"[Socket] Cliente {addr} desconectado antes de registrarse.")
-            return
+    cipher = None
 
+    try:
+        # 1. Esperar mensaje de registro
+        data = conn.recv(1024).decode('utf-8')
         msg = json.loads(data)
         
-        # El Monitor debe enviar un mensaje 'REGISTER_MONITOR' para identificarse
         if msg.get('type') == 'REGISTER_MONITOR':
-            cp_id = msg.get('cp_id')
-
-            with cp_states_lock:
-                # Comprobar si el CP_ID existe en nuestra "BD" (cargada de data.json)
-                if cp_id in cp_states:
-                    # Si estaba desconectado, ahora está Activado (IDLE)
-                    # Si estaba DESCONECTADO, ahora que el Monitor se ha conectado,
-                    # pasa a estar disponible (IDLE / 'Activado').
-                    if cp_states[cp_id]['status'] == 'DISCONNECTED':
-                         cp_states[cp_id]['status'] = 'IDLE'
-                    ack_msg = b'ACK_REGISTER' # Confirmar registro
-                    log_msg = f"Monitor {cp_id} conectado desde {addr}. Estado -> IDLE"
-                else:
-                    # CP_ID no encontrado en data.json
-                    ack_msg = b'NACK_UNKNOWN_CP'
-                    log_msg = f"Monitor {cp_id} ({addr}) RECHAZADO (CP desconocido)"
-                    cp_id = None # Marcar para desconexión
- 
-        else:
-            ack_msg = b'NACK_EXPECTED_REGISTER'
-            cp_id = None # Marcar para desconexión
-
-        # --- Enviar respuesta y log FUERA del lock ---
-        if ack_msg:
-            conn.sendall(ack_msg)
-        if log_msg:
-            log_message(log_msg)
-
-        if cp_id is None:
-            return # Cerrar conexión si el registro falló
-
-        # 2. Bucle de escucha de estado (Averías)
-        while True:
-            data = conn.recv(1024).decode('utf-8')
-            if not data:
-                # Conexión perdida
-                raise ConnectionResetError("Monitor disconnected")
+            requested_id = msg.get('cp_id')
             
-            msg = json.loads(data)
+            # --- SEGURIDAD RELEASE 2 ---
+            # Verificar en BD si está registrado
+            is_valid, cp_data = verify_cp_registration(requested_id)
             
-            # Esperar mensajes de estado del Monitor
-            if msg.get('type') == 'MONITOR_STATUS':
-                status = msg.get('status') # "OK" o "FAULTED"
-                info = msg.get('info', '')
-                
-                # Este lock es rápido (solo actualiza estado y log), está bien.
+            if is_valid:
+                cp_id = requested_id
+                symmetric_key = cp_data['symmetric_key'] # Esta clave se usa para descifrar futuros mensajes
+                cipher = get_cipher(symmetric_key)
 
                 with cp_states_lock:
-                    if status == 'FAULTED':
-                        # El monitor reporta una avería
-                        if cp_states[cp_id]['status'] != 'FAULTED':
-                            cp_states[cp_id]['status'] = 'FAULTED' # El panel lo pondrá en ROJO
-                            log_message(f"¡AVERÍA de Monitor {cp_id}! ({info})")
-                    
-                    elif status == 'OK':
-                        # El monitor reporta recuperación de avería
-                        if cp_states[cp_id]['status'] == 'FAULTED':
-                            cp_states[cp_id]['status'] = 'IDLE' # Vuelve a disponible (VERDE)
-                            log_message(f"Avería RESUELTA en {cp_id}. Estado -> IDLE")
+                    cp_states[cp_id] = {
+                        'status': 'IDLE', 
+                        'price_kwh': float(cp_data['price_kwh']),
+                        'key': symmetric_key
+                    }
+                
+                update_cp_status_in_db(cp_id, 'IDLE')
+                conn.sendall(b"ACK_REGISTER")
+                print(f"[Socket] Monitor {cp_id} Conectado y Autenticado.")
+            else:
+                print(f"[Socket] Rechazado {requested_id}. No registrado en BD.")
+                conn.sendall(b"NACK_NOT_REGISTERED")
+                return
+        else:
+            return
 
-                            
-    except (ConnectionResetError, BrokenPipeError, json.JSONDecodeError) as e:
-        log_message(f"[Socket] Conexión perdida con Monitor {cp_id if cp_id else addr}: {e}")
+        # 2. Bucle de latido (Estado Monitor)
+        while not stop_event.is_set():
+            encrypted_data = conn.recv(2048) # Recibimos bytes (no decode todavía)
+            if not encrypted_data: break
+            
+            try:
+                # --- AQUÍ OCURRE EL DESCIFRADO ---
+                decrypted_bytes = cipher.decrypt(encrypted_data)
+                json_str = decrypted_bytes.decode('utf-8')
+                msg = json.loads(json_str)
+
+                if msg.get('type') == 'MONITOR_STATUS':
+                    status = msg.get('status') # OK / FAULTED
+                    if status == 'FAULTED':
+                        with cp_states_lock:
+                            cp_states[cp_id]['status'] = 'FAULTED'
+                        update_cp_status_in_db(cp_id, 'FAULTED')
+                        print(f"[ALERTA] Monitor {cp_id} reporta AVERÍA.")
+                    elif status == 'OK':
+                        # Si estaba averiado y vuelve a OK -> IDLE
+                        with cp_states_lock:
+                            if cp_states[cp_id]['status'] == 'FAULTED':
+                                cp_states[cp_id]['status'] = 'IDLE'
+                                update_cp_status_in_db(cp_id, 'IDLE')
+            except Exception as e:
+                print(f"[Error Cifrado] No se pudo descifrar mensaje de {cp_id}: {e}")
+                break
+
     except Exception as e:
-        log_message(f"[Error Socket Handler] {e}")
+        print(f"[Socket] Error con {addr}: {e}")
     finally:
         if cp_id:
-            # Si un monitor se desconecta (por error o cierre), el CP pasa a estado DESCONECTADO
-            # Esto implementa el "fallo de red".
             with cp_states_lock:
                 if cp_id in cp_states:
-                    cp_states[cp_id]['status'] = 'DISCONNECTED' # El panel lo pondrá en GRIS
-                    log_message(f"Monitor {cp_id} desconectado. Estado -> DISCONNECTED")
+                    cp_states[cp_id]['status'] = 'DISCONNECTED'
+            update_cp_status_in_db(cp_id, 'DISCONNECTED')
+            print(f"[Socket] Monitor {cp_id} desconectado.")
         conn.close()
 
 def start_socket_server():
-    """
-    Inicia el servidor de sockets principal.
-    Acepta conexiones entrantes de los EV_CP_M y crea un hilo (handle_monitor_client) para cada uno.
-    """
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # Permite reusar el puerto
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
-        # Escucha en el puerto especificado en los argumentos
-        server_socket.bind(('0.0.0.0', socket_port))
-        server_socket.listen()
-        log_message(f"Servidor Socket escuchando en puerto {socket_port}...")
-
-        while True:
-            conn, addr = server_socket.accept()
-            # Inicia un nuevo hilo para gestionar este monitor
-            threading.Thread(target=handle_monitor_client, args=(conn, addr), daemon=True).start()
-            
-    except OSError as e:
-        log_message(f"[Error Fatal Socket] {e}. ¿Puerto {socket_port} en uso?")
-        os._exit(1) # Salida forzada si no puede bindear el puerto
+        server.bind(('0.0.0.0', socket_port))
+        server.listen()
+        print(f"[Socket] Escuchando Monitores en puerto {socket_port}")
+        while not stop_event.is_set():
+            conn, addr = server.accept()
+            t = threading.Thread(target=handle_monitor, args=(conn, addr), daemon=True)
+            t.start()
     except Exception as e:
-        log_message(f"[Error Socket Server] {e}")
-    finally:
-        server_socket.close()
+        print(f"[Socket Fatal] {e}")
 
-# --- Panel de Monitorización (UI) ---
+# --- MENÚ DE CONTROL (TERMINAL) ---
 
-def draw_panel():
-    """
-    Dibuja el panel de monitorización en la consola.
-    Lee el estado actual de `cp_states` (protegido por lock) y lo formatea
-    según los requisitos de estado y color.
-    """
-    os.system('cls' if os.name == 'nt' else 'clear') # Limpiar la consola
+def run_control_menu():
+    """Solo muestra el menú de control, sin gráficos."""
+    time.sleep(1)
+    print("\n" + "="*30)
+    print(" EV CENTRAL - CONTROL CONSOLE")
+    print("="*30)
+    print(" (La monitorización gráfica está disponible en la Web)")
     
-    # Título del Panel 
-    print(f"{Color.BLUE_BG}{Color.BOLD}{Color.WHITE}" + 
-          " *** SD EV CHARGING SOLUTION. MONITORIZATION PANEL *** " +
-          f"{Color.RESET}")
-    print("-" * 54)
-    
-    cp_blocks = []
-
-    with cp_states_lock: # Acceso seguro a la estructura de datos
-        # Ordenamos los CPs por ID para una visualización consistente
-        for cp_id, data in cp_states.items():
-            status = data['status']
-            color = Color.GRAY_BG # Color por defecto (Desconectado)
-            lines = [
-                f"{cp_id}",                       # ID del CP
-                data['location'],                 # Ubicación
-                f"{data['price_kwh']:.2f}€/kWh"   # Precio
-            ]
+    while not stop_event.is_set():
+        print("\n--- COMANDOS ADMIN ---")
+        print("1. Parar un CP (Stop)")
+        print("2. Reanudar un CP (Resume)")
+        print("3. Ver estado de memoria (Debug)")
+        print("4. Salir")
+        
+        choice = input("Seleccione opción: ")
+        
+        if choice == '1':
+            tid = input("ID del CP a detener: ")
+            send_kafka_message(f"cp_auth_{tid}", {"action": "STOP_COMMAND"})
+            print("Comando enviado.")
+            update_cp_status_in_db(tid, 'STOPPED')
             
-            # Mapeo de estados a colores y texto según el enunciado
-            if status == 'IDLE' or status == 'AUTHORIZED':
-                color = Color.GREEN_BG # Activado (VERDE)
-            elif status == 'CHARGING':
-                color = Color.GREEN_BG # Suministrando (VERDE)
-                # Añadir datos de sesión en tiempo real
-                lines.append(f"Driver {data['driver_id']}")    # Id del conductor
-                lines.append(f"{data['session_kwh']:.3f} kWh") # Consumo en Kw
-                lines.append(f"{data['session_cost']:.2f} €")  # Importe en €
-            elif status == 'STOPPED':
-                color = Color.ORANGE_BG # Parado (NARANJA)
-                lines.append("Out of Order") 
-            elif status == 'FAULTED':
-                color = Color.RED_BG # Averiado (ROJO)
-                lines.append("AVERIADO")
-            else:
-                color = Color.GRAY_BG # Desconectado (GRIS)
-                lines.append("DESCONECTADO")
-                
-            cp_blocks.append((color, lines))
+        elif choice == '2':
+            tid = input("ID del CP a reanudar: ")
+            send_kafka_message(f"cp_auth_{tid}", {"action": "RESUME_COMMAND"})
+            print("Comando enviado.")
+            
+        elif choice == '3':
+            print(json.dumps(cp_states, indent=2))
+            
+        elif choice == '4':
+            print("Apagando sistema...")
+            stop_event.set()
+            # Enviar señal de apagado a CPs
+            for cid in cp_states:
+                send_kafka_message(f"cp_auth_{cid}", {"action": "CENTRAL_SHUTDOWN"})
+            break
 
+# --- MAIN ---
 
-    # Lógica para dibujar los CPs en filas (5 por fila)
-    max_lines = max(len(b[1]) for b in cp_blocks) if cp_blocks else 0
-    for i in range(0, len(cp_blocks), 5):
-        row_blocks = cp_blocks[i:i+5]
-        for line_idx in range(max_lines):
-            line_str = ""
-            for color, lines in row_blocks:
-                if line_idx < len(lines):
-                    line_str += f"{color}{lines[line_idx]:<15}{Color.RESET} "
-                else:
-                    line_str += f"{color}{' ':<15}{Color.RESET} "
-            print(line_str.strip())
-        print(f"{' ' * (16 * len(row_blocks) - 1)}") # Espacio entre filas
-
-def panel_refresh_loop():
-    """
-    Hilo dedicado a redibujar el panel y los logs cada 2 segundos.
-    Esto permite que la UI se actualice mientras el hilo principal
-    espera el input del administrador (en el menú).
-    """
-    while not panel_refresh_event.is_set():
-        # 1. Dibujar los bloques de CPs
-        draw_panel() 
-
-        # 2. Dibujar peticiones ("ON GOING DRIVERS REQUESTS")
-        print(f"\n{Color.BOLD}*** ON GOING DRIVERS REQUESTS ***{Color.RESET}")
-        print(f"{'DATE':<10} {'START TIME':<10} {'User ID':<10} {'CP':<10}")
-        with cp_states_lock:
-            for req in reversed(on_going_requests[-3:]): # Mostrar solo las 3 últimas
-                print(f"{req['date']:<10} {req['time']:<10} {req['user_id']:<10} {req['cp_id']:<10}")
-
-        # 3. Dibujar mensajes ("APLICATION MESSAGES")
-        print(f"\n{Color.BOLD}*** APLICATION MESSAGES ***{Color.RESET}")
-        # log_message("CENTRAL system status OK") # El latido se genera por otros mensajes
-        with cp_states_lock:
-            for msg in application_messages:
-                print(msg)
-
-        # 4. Imprimir el menú y el prompt
-        print("-" * 54)
-        print_admin_menu()
-        # Imprime el prompt sin saltar línea, esperando el input() del hilo main
-        print("Seleccione una opción: ", end='', flush=True) 
-
-        time.sleep(2) # Refrescar cada 2 segundos
-    print("Hilo de refresco del panel detenido.")
-
-def print_admin_menu():
-    """
-    Muestra el menú de administrador .
-    """
-    print(f"\n{Color.BOLD}--- MENÚ DE ADMINISTRADOR ---{Color.RESET}")
-    print("1. Parar CP (Poner 'Out of Order')") 
-    print("2. Reanudar CP (Quitar 'Out of Order')") 
-    print("3. Salir")
-
-# --- Función Principal ---
-
-def main():
-    global kafka_bootstrap_servers, socket_port, kafka_producer
-    
-    # 1. Validar argumentos de entrada
+if __name__ == "__main__":
     if len(sys.argv) != 3:
-        print("Uso: python EV_Central.py <puerto_escucha_socket> <ip_broker_kafka:puerto>")
+        print("Uso: python EV_Central.py <puerto_socket> <broker_kafka>")
         sys.exit(1)
         
-    try:
-        # Argumento 1: Puerto de escucha para Sockets (Monitors)
-        socket_port = int(sys.argv[1])
-    except ValueError:
-        print("Error: El <puerto_escucha_socket> debe ser un número.")
-        sys.exit(1)
-        
-    # Argumento 2: IP y puerto del Broker Kafka
+    socket_port = int(sys.argv[1])
     kafka_bootstrap_servers = sys.argv[2]
-    log_message(f"Iniciando EV_Central...")
-    log_message(f"Kafka Broker: {kafka_bootstrap_servers}")
-
-    # 2. Cargar datos iniciales (Paso 1 de la Mecánica)
-    load_initial_data()
-
-    # 3. Inicializar Kafka Producer (para enviar autorizaciones y comandos)
+    
+    # Iniciar Productor Kafka
     try:
         kafka_producer = KafkaProducer(
             bootstrap_servers=kafka_bootstrap_servers,
-            value_serializer=lambda v: json.dumps(v).encode('utf-8') # Serializa a JSON
+            value_serializer=lambda v: json.dumps(v).encode('utf-8')
         )
-    except NoBrokersAvailable:
-        log_message(f"[Error Fatal] No se puede conectar a Kafka en {kafka_bootstrap_servers}")
+    except:
+        print("Error conectando a Kafka.")
         sys.exit(1)
-    
-    # 4. Iniciar hilos de red (Socket y Consumidores Kafka)
-    # Todos los hilos se marcan como 'daemon=True' para que se
-    # cierren automáticamente cuando el hilo principal (menú) termine.
-    
-    # Hilo para aceptar conexiones de Monitors (EV_CP_M)
+
+    # Iniciar Hilos
     threading.Thread(target=start_socket_server, daemon=True).start()
-    # Hilo para escuchar peticiones de Drivers (EV_Driver)
     threading.Thread(target=kafka_consumer_driver_requests, daemon=True).start()
-    # Hilo para escuchar telemetría y tickets de los CPs (EV_CP_E)
     threading.Thread(target=kafka_consumer_cp_updates, daemon=True).start()
+
+    # --- ABRIR DASHBOARD AUTOMÁTICAMENTE ---
+    print("Abriendo Dashboard en el navegador...")
+    webbrowser.open("http://localhost:5000")  # Abre la URL servida por la API
     
-    # 5. Iniciar hilo de refresco del panel
-    # Este hilo se encarga solo de la UI
-    threading.Thread(target=panel_refresh_loop, daemon=True).start()
-
-    # 6. Bucle principal (Gestión del Menú de Administrador)
-    # El hilo principal se queda aquí, gestionando la entrada del usuario
-    # para las opciones del .
+    # Iniciar Menú
     try:
-        while True:
-            choice = input() # Espera el input del admin (el prompt lo pone el hilo del panel)
-
-            if choice == '1': # Parar CP 
-                cp_id = input("  > Introduzca ID del CP a PARAR: ").strip().upper()
-                if cp_id in cp_states:
-                    # 1. Enviar comando STOP al Engine (EV_CP_E) vía Kafka
-                    auth_topic = f"cp_auth_{cp_id}"
-                    send_kafka_message(auth_topic, {"action": "STOP_COMMAND"})
-                    log_message(f"Comando PARAR enviado a {cp_id}")
-                    # 2. Actualizar estado local para que el panel lo muestre (NARANJA)
-                    # El CP pondrá su estado en "ROJO" (en la simulación es NARANJA)
-                    with cp_states_lock:
-                        cp_states[cp_id]['status'] = 'STOPPED' 
-                else:
-                    log_message(f"Comando PARAR fallido. CP {cp_id} no existe.")
-
-            elif choice == '2': # Reanudar CP 
-                cp_id = input("  > Introduzca ID del CP a REANUDAR: ").strip().upper()
-                if cp_id in cp_states:
-                    # 1. Enviar comando RESUME al Engine (EV_CP_E) vía Kafka
-                    auth_topic = f"cp_auth_{cp_id}"
-                    send_kafka_message(auth_topic, {"action": "RESUME_COMMAND"})
-                    log_message(f"Comando REANUDAR enviado a {cp_id}")
-                    # Nota: El CP (Engine) recibirá el comando y reportará su nuevo estado 'IDLE'
-                    # vía telemetría (TOPIC_CP_STATUS), actualizando el panel a VERDE.
-                else:
-                    log_message(f"Comando REANUDAR fallido. CP {cp_id} no existe.")
-
-            elif choice == '3': # Salir
-                log_message("Apagando EV_Central...")
-
-                notify_system_shutdown()
-                time.sleep(1)
-
-                panel_refresh_event.set() # Detener el hilo del panel
-                time.sleep(1.1) # Esperar a que el hilo del panel se detenga
-                break # Salir del bucle while
-
-            else:
-                log_message(f"Opción '{choice}' no válida.")
-
+        run_control_menu()
     except KeyboardInterrupt:
-        log_message("Cierre solicitado (Ctrl+C).")
-
-        notify_system_shutdown()
-        time.sleep(1)    
-
-        panel_refresh_event.set() # Detener el hilo del panel
-        time.sleep(1.1)
+        stop_event.set()
     finally:
-        # Limpieza final
-        if kafka_producer:
-            kafka_producer.close()
-        print("\nEV_Central apagado.")
-        # Salida forzada para detener todos los hilos daemon
-        os._exit(0)
-
-if __name__ == "__main__":
-    # Punto de entrada del script
-    main()
+        if kafka_producer: kafka_producer.close()
