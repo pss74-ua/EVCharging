@@ -140,8 +140,8 @@ def get_cp_info(cp_id):
     try:
         cursor = conn.cursor(dictionary=True) # dictionary=True para acceder por nombre campo
         # Si usas mysql.connector sin dictionary=True, usa cursor = conn.cursor() y accede por índice
-        
-        query = "SELECT location, price_kwh FROM charge_points WHERE cp_id = %s"
+
+        query = "SELECT location, price_kwh, symmetric_key, is_registered FROM charge_points WHERE cp_id = %s"
         cursor.execute(query, (cp_id,))
         result = cursor.fetchone()
         cursor.close()

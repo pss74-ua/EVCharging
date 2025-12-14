@@ -367,6 +367,34 @@ def charging_simulation_thread():
         else: # state == State.FAULTED
              print("[Carga] CP permanece en estado FAULTED (Averiado).")
 
+def safe_shutdown():
+    """
+    Envía un último mensaje a Kafka avisando que el Engine se desconecta.
+    """
+    global kafka_producer, cp_id
+    
+    if cp_id and kafka_producer:
+        print(f"\n[Engine] Enviando señal de desconexión para {cp_id}...")
+        try:
+            # Enviamos mensaje de estado DISCONNECTED
+            msg = {
+                "cp_id": cp_id,
+                "timestamp": time.time(),
+                "status": "DISCONNECTED", # <--- ESTADO CLAVE
+                "info": "Engine Shutdown (Manual/Crash)",
+                "session_kwh": 0.0,
+                "session_cost": 0.0
+            }
+            kafka_producer.send(TOPIC_STATUS_UPDATES, msg)
+            kafka_producer.flush()
+            print("[Engine] Señal enviada a Central.")
+        except Exception as e:
+            print(f"[Error] No se pudo enviar desconexión: {e}")
+            
+    if kafka_producer:
+        kafka_producer.close()
+        print("[Engine] Kafka Producer cerrado.")
+
 def print_menu():
     """Muestra el menú de simulación del CP."""
     global state, health_status, cp_id, current_driver_id
@@ -440,102 +468,106 @@ def main():
         time.sleep(1)
     print(f"[Info] ¡Motor del CP {cp_id} listo!")
 
+    try:
     # 5. Bucle principal (Menú de simulación)
-    while True:
-        choice = print_menu()
+        while True:
+            choice = print_menu()
 
-        if choice == '1': # Carga Manual 
-            with lock:
-                if state == State.IDLE:
-                    print("[Menu] Iniciando carga manual...")
-                    state = State.CHARGING
-                    current_driver_id = "MANUAL" # Identificador para carga local
-                    print(f"[Menu] Usando precio: {current_price_kwh} €/kWh") 
-                    
-                    stop_charging_event.clear()
-                    # Iniciar hilo de simulación de carga
-                    threading.Thread(target=charging_simulation_thread, daemon=True).start()
-                else:
-                    print(f"[Menu] No se puede iniciar carga manual. Estado actual: {state}")
-        
-        elif choice == '2': # Simular Plug-in 
-            with lock:
-                if state == State.AUTHORIZED:
-                    state = State.CHARGING
-                    stop_charging_event.clear()
-                    # Iniciar hilo de simulación de carga
-                    threading.Thread(target=charging_simulation_thread, daemon=True).start()
-                elif state == State.IDLE:
-                    print("[Menu] No se puede enchufar. El vehículo no ha sido autorizado por Central.")
-                else:
-                    print(f"[Menu] No se puede enchufar. Estado actual: {state}")
-                    
-        elif choice == '3': # Simular Unplug 
-            with lock:
-                if state == State.CHARGING:
-                    print("[Menu] Simulación de 'Unplug'. Deteniendo suministro...")
-                    stop_charging_event.set() # 1. Enviar señal de parada al hilo
-                else:
-                    print("[Menu] No se puede desenchufar. No hay ninguna carga activa.")
-                    continue # Saltar el resto del bucle
+            if choice == '1': # Carga Manual 
+                with lock:
+                    if state == State.IDLE:
+                        print("[Menu] Iniciando carga manual...")
+                        state = State.CHARGING
+                        current_driver_id = "MANUAL" # Identificador para carga local
+                        print(f"[Menu] Usando precio: {current_price_kwh} €/kWh") 
+                        
+                        stop_charging_event.clear()
+                        # Iniciar hilo de simulación de carga
+                        threading.Thread(target=charging_simulation_thread, daemon=True).start()
+                    else:
+                        print(f"[Menu] No se puede iniciar carga manual. Estado actual: {state}")
             
-            print("[Menu] Esperando a que el hilo de carga finalice...")
-            
-            # Esperar a que el hilo 'charging_simulation_thread' termine
-            # (limpiará el evento stop_charging_event)
-            timeout_counter = 0
-            while stop_charging_event.is_set() and timeout_counter < 30:
-                time.sleep(0.1) # Esperar 100ms
-                timeout_counter += 1
+            elif choice == '2': # Simular Plug-in 
+                with lock:
+                    if state == State.AUTHORIZED:
+                        state = State.CHARGING
+                        stop_charging_event.clear()
+                        # Iniciar hilo de simulación de carga
+                        threading.Thread(target=charging_simulation_thread, daemon=True).start()
+                    elif state == State.IDLE:
+                        print("[Menu] No se puede enchufar. El vehículo no ha sido autorizado por Central.")
+                    else:
+                        print(f"[Menu] No se puede enchufar. Estado actual: {state}")
+                        
+            elif choice == '3': # Simular Unplug 
+                with lock:
+                    if state == State.CHARGING:
+                        print("[Menu] Simulación de 'Unplug'. Deteniendo suministro...")
+                        stop_charging_event.set() # 1. Enviar señal de parada al hilo
+                    else:
+                        print("[Menu] No se puede desenchufar. No hay ninguna carga activa.")
+                        continue # Saltar el resto del bucle
+                
+                print("[Menu] Esperando a que el hilo de carga finalice...")
+                
+                # Esperar a que el hilo 'charging_simulation_thread' termine
+                # (limpiará el evento stop_charging_event)
+                timeout_counter = 0
+                while stop_charging_event.is_set() and timeout_counter < 30:
+                    time.sleep(0.1) # Esperar 100ms
+                    timeout_counter += 1
 
-            if stop_charging_event.is_set():
-                 print("[Error] El hilo de carga no finalizó. Forzando reseteo.")
-                 stop_charging_event.clear()
+                if stop_charging_event.is_set():
+                    print("[Error] El hilo de carga no finalizó. Forzando reseteo.")
+                    stop_charging_event.clear()
+                else:
+                    print("[Menu] Hilo de carga detenido. CP listo.")
+
+            elif choice == '4': # Simular Avería 
+                with lock:
+                    if health_status == "KO":
+                        print("[Menu] La avería ya está simulada.")
+                    else:
+                        health_status = "KO" # El Monitor leerá esto
+                        state = State.FAULTED # Cambiar estado interno
+                        print("[Menu] ¡AVERÍA SIMULADA! Se reportará 'KO' al Monitor.")
+
+                        # Enviar notificación de estado a Central (Panel -> ROJO)
+                        send_kafka_message(TOPIC_STATUS_UPDATES, {
+                            "cp_id": cp_id,
+                            "timestamp": time.time(),
+                            "status": State.FAULTED,
+                            "info": "Fault simulated by user"
+                        })
+
+            elif choice == '5': # Resolver Avería 
+                with lock:
+                    if health_status == "OK":
+                        print("[Menu] El CP no está en estado de avería.")
+                    else:
+                        health_status = "OK" # El Monitor leerá esto
+                        state = State.IDLE # Vuelve a estar disponible
+                        print("[Menu] Avería resuelta. Se reportará 'OK' al Monitor.")
+
+                        # Enviar notificación de estado a Central (Panel -> VERDE)
+                        send_kafka_message(TOPIC_STATUS_UPDATES, {
+                            "cp_id": cp_id,
+                            "timestamp": time.time(),
+                            "status": State.IDLE,
+                            "info": "Fault resolved by user"
+                        })
+            
+            elif choice == '6': # Salir
+                print("[Info] Apagando EV_CP_E...")
+                break
+                
             else:
-                 print("[Menu] Hilo de carga detenido. CP listo.")
-
-        elif choice == '4': # Simular Avería 
-            with lock:
-                if health_status == "KO":
-                    print("[Menu] La avería ya está simulada.")
-                else:
-                    health_status = "KO" # El Monitor leerá esto
-                    state = State.FAULTED # Cambiar estado interno
-                    print("[Menu] ¡AVERÍA SIMULADA! Se reportará 'KO' al Monitor.")
-
-                    # Enviar notificación de estado a Central (Panel -> ROJO)
-                    send_kafka_message(TOPIC_STATUS_UPDATES, {
-                        "cp_id": cp_id,
-                        "timestamp": time.time(),
-                        "status": State.FAULTED,
-                        "info": "Fault simulated by user"
-                    })
-
-        elif choice == '5': # Resolver Avería 
-            with lock:
-                if health_status == "OK":
-                    print("[Menu] El CP no está en estado de avería.")
-                else:
-                    health_status = "OK" # El Monitor leerá esto
-                    state = State.IDLE # Vuelve a estar disponible
-                    print("[Menu] Avería resuelta. Se reportará 'OK' al Monitor.")
-
-                    # Enviar notificación de estado a Central (Panel -> VERDE)
-                    send_kafka_message(TOPIC_STATUS_UPDATES, {
-                        "cp_id": cp_id,
-                        "timestamp": time.time(),
-                        "status": State.IDLE,
-                        "info": "Fault resolved by user"
-                    })
+                print("[Error] Opción no válida.")
         
-        elif choice == '6': # Salir
-            print("[Info] Apagando EV_CP_E...")
-            if kafka_producer:
-                kafka_producer.close()
-            break
-            
-        else:
-            print("[Error] Opción no válida.")
+    except KeyboardInterrupt:
+        print("\n[Info] Interrupción (Ctrl+C) detectada.")
+    finally:
+        safe_shutdown()
 
 if __name__ == "__main__":
     main()
