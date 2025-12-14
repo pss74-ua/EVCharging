@@ -187,8 +187,28 @@ def register_with_registry_http():
     host, port = registry_addr
     url = f"http://{host}:{port}/api/v1/charge_point"
     
-    Location = input("Ubicación del CP: ") or "Unknown"
-    Price = input("Precio kWh: ") or "0.50"
+    Location = "Unknown"
+    Price = "0.50"
+    ask_user = True # Por defecto preguntamos
+    
+    try:
+        # Hacemos GET /api/v1/charge_point/<id>
+        check_response = requests.get(f"{url}/{cp_id_global}", timeout=5)
+        
+        if check_response.status_code == 200:
+            # ¡Existe! Usamos sus datos
+            data = check_response.json()
+            if data.get('location') and data.get('location') != "Unknown":
+                Location = data.get('location')
+                Price = str(data.get('price_kwh') or "0.50")
+                ask_user = False # No molestamos al usuario
+            
+    except Exception as e:
+        print(f"[Registry] No se pudo verificar existencia (se pedirán datosalian): {e}")
+
+    if ask_user:
+        Location = input("Ubicación del CP: ") or "Unknown"
+        Price = input("Precio kWh: ") or "0.50"
 
     payload = {
         "cp_id": cp_id_global,
@@ -217,6 +237,41 @@ def register_with_registry_http():
     except Exception as e:
         print(f"[Registry] Error inesperado: {e}")
         return False
+    
+def deregister_from_registry_http():
+    """
+    Consume el API REST del Registry para dar de BAJA el CP (DELETE).
+    Borra la symmetric_key de la memoria del Monitor.
+    """
+    global symmetric_key, registry_addr, cp_id_global
+    
+    if not symmetric_key:
+        print("[Registry] No estás registrado, no puedes darte de baja.")
+        return
+
+    # Construir URL: http://host:port/api/v1/charge_point/<id>
+    host, port = registry_addr
+    url = f"http://{host}:{port}/api/v1/charge_point/{cp_id_global}"
+    
+    print(f"\n[Registry] Solicitando BAJA a {url}...")
+    
+    try:
+        response = requests.delete(url, timeout=5)
+        
+        if response.status_code == 200:
+            print(f"[Registry] ¡ÉXITO! CP dado de baja correctamente.")
+            symmetric_key = None # Borramos la clave de memoria
+            print(f"[Seguridad] Clave simétrica borrada.")
+        elif response.status_code == 404:
+            print("[Registry] El CP no existía en el Registry. Limpiando clave local...")
+            symmetric_key = None
+        else:
+            print(f"[Registry] Error {response.status_code}: {response.text}")
+            
+    except requests.exceptions.ConnectionError:
+        print("[Registry] Error: No se puede conectar al Registry.")
+    except Exception as e:
+        print(f"[Registry] Error inesperado: {e}")
 
 # --- Funciones de Engine y Central ---
 
@@ -483,7 +538,10 @@ def print_menu():
     print("="*40)
     print(f" Estado Registro: {'REGISTRADO' if symmetric_key else 'NO REGISTRADO'}")
     print("-" * 40)
-    print("1. REGISTRARSE en Registry (Obtener Clave)")
+    if not symmetric_key:
+        print("1. REGISTRARSE en Registry (Obtener Clave)")
+    else:
+        print("1. DAR DE BAJA en Registry (Borrar Clave)")
     print("2. Conectar a Engine")
     print("3. Autenticarse con Central")
     print("4. Iniciar Monitorización (Bucle)")
@@ -525,7 +583,10 @@ def main():
         choice = input("Opción: ")
         
         if choice == '1':
-            register_with_registry_http()
+            if symmetric_key:
+                deregister_from_registry_http()
+            else:
+                register_with_registry_http()
             
         elif choice == '2':
             connect_to_engine()

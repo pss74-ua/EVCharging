@@ -128,6 +128,32 @@ def deregister_cp(cp_id):
         if conn and conn.is_connected():
             conn.close()
 
+@app.route('/api/v1/charge_point/<cp_id>', methods=['GET'])
+def get_cp_info(cp_id):
+    """Devuelve la info del CP si existe."""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'DB Error'}), 500
+    
+    try:
+        cursor = conn.cursor(dictionary=True) # dictionary=True para acceder por nombre campo
+        # Si usas mysql.connector sin dictionary=True, usa cursor = conn.cursor() y accede por índice
+        
+        query = "SELECT location, price_kwh FROM charge_points WHERE cp_id = %s"
+        cursor.execute(query, (cp_id,))
+        result = cursor.fetchone()
+        cursor.close()
+        
+        if result:
+            return jsonify(result), 200 # Devuelve {location: "...", price_kwh: ...}
+        else:
+            return jsonify({'message': 'Not found'}), 404
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
 # --- ARRANQUE (HTTP) ---
 if __name__ == "__main__":
     # Usamos puerto 6000 para diferenciarlo de Central (5000)
