@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_mysqldb import MySQL # Librería para la conexión a MySQL
+from flask_cors import CORS
 #import mysql.connector as db_connector# Conector de Python a MySQL
 import time
 import json
@@ -7,6 +8,8 @@ import mysql.connector
 
 # --- 1. INICIALIZACIÓN DE FLASK ---
 app = Flask(__name__)
+# Habilitar CORS para permitir el acceso desde el navegador (file:///)
+CORS(app)
 
 # --- 2. CONFIGURACIÓN DE LA CONEXIÓN A LA BASE DE DATOS ---
 app.config['MYSQL_HOST'] = 'localhost'
