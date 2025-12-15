@@ -191,6 +191,29 @@ def send_status_to_central(status, info):
 
 # --- Funciones del Registry de la entrega 2 ---
 
+def check_initial_registration():
+    """
+    Consulta al Registry al arrancar para ver si ya estamos registrados.
+    Si es así, recupera la clave simétrica automáticamente.
+    """
+    global symmetric_key, registry_addr, cp_id_global
+    
+    host, port = registry_addr
+    url = f"http://{host}:{port}/api/v1/charge_point/{cp_id_global}"
+        
+    try:
+        response = requests.get(url, timeout=2)
+        
+        if response.status_code == 200:
+            data = response.json()
+            # Verificamos si consta como registrado en la BD
+            if data.get('is_registered') == 1:
+                symmetric_key = data.get('symmetric_key')
+                print(f"[Init] ¡CP ya registrado! Clave recuperada.")
+            
+    except Exception:
+        print("[Init] No se pudo contactar con el Registry (continuamos como No Registrado).")
+
 def register_with_registry_http():
     """
     Consume el API REST del Registry para dar de alta el CP.
@@ -202,6 +225,7 @@ def register_with_registry_http():
     host, port = registry_addr
     url = f"http://{host}:{port}/api/v1/charge_point"
     
+    """
     Location = "Unknown"
     Price = "0.50"
     ask_user = True # Por defecto preguntamos
@@ -224,6 +248,15 @@ def register_with_registry_http():
     if ask_user:
         Location = input("Ubicación del CP: ") or "Unknown"
         Price = input("Precio kWh: ") or "0.50"
+    """
+
+    Location = input("Ubicación del CP: ") or "Unknown"
+    Price = input("Precio kWh: ") or "0.50"
+    try:
+        Price = float(Price) if Price.strip() else 0.50
+    except ValueError:
+        print("[Error] Precio inválido, usando 0.50")
+        Price = 0.50
 
     payload = {
         "cp_id": cp_id_global,
@@ -498,7 +531,7 @@ if __name__ == "__main__":
 
 def health_check_loop():
     """Bucle de monitorización (Bloqueante)."""
-    global sock_engine, sock_central, cp_id_global, current_status
+    global sock_engine, sock_central, cp_id_global, current_status, symmetric_key
     
     if not sock_engine or not sock_central:
         print("[Monitor] Error: Debes estar conectado a Engine y Central para monitorizar.")
@@ -515,8 +548,8 @@ def health_check_loop():
             time.sleep(1)
             
             # 1. Ping al Engine
-            new_status = "FAULTED"
-            info = "Engine connection lost"
+            new_status = "UNKNOWN" # Valor inicial
+            info = ""
             
             try:
                 sock_engine.sendall(b"HEALTH_CHECK")
@@ -531,8 +564,9 @@ def health_check_loop():
                     info = "Engine Simulated Fault"
                     
             except Exception as e:
-                print(f"[Monitor] Error comunicando con Engine: {e}")
-                break # Salir del bucle si falla Engine
+                # print(f"[Monitor] Conexión perdida con Engine: {e}")
+                new_status = "DISCONNECTED"
+                info = "Engine connection lost (Process stopped)"
 
             # 2. Notificar a Central si hay cambio
             if new_status != current_status:
@@ -561,6 +595,56 @@ def health_check_loop():
 
     except KeyboardInterrupt:
         print("\n[Monitor] Deteniendo monitorización...")
+
+def check_active_connections():
+    """
+    Verifica si los sockets siguen vivos antes de mostrar el menú.
+    Usa el modo 'no bloqueante' para mirar si hay desconexión.
+    """
+    global sock_engine, sock_central
+    
+    # 1. Comprobar Engine
+    if sock_engine:
+        try:
+            sock_engine.setblocking(False) # Modo no bloqueante
+            try:
+                # Intentamos leer. Si devuelve b'' (vacío), es que se cerró.
+                # Si lanza BlockingIOError, es que está vivo pero no hay datos (todo OK).
+                data = sock_engine.recv(16, socket.MSG_PEEK)
+                if len(data) == 0:
+                    raise ConnectionResetError
+            except BlockingIOError:
+                pass # Está vivo y esperando
+            except (ConnectionResetError, ConnectionAbortedError):
+                raise
+            finally:
+                sock_engine.setblocking(True) # Volver a modo normal
+        except:
+            sock_engine = None
+
+            if sock_central: # Si perdemos Engine, también cerramos Central
+                try:
+                    sock_central.close()
+                except:
+                    pass
+                sock_central = None
+
+    # 2. Comprobar Central (Opcional, misma lógica)
+    if sock_central:
+        try:
+            sock_central.setblocking(False)
+            try:
+                data = sock_central.recv(16, socket.MSG_PEEK)
+                if len(data) == 0:
+                    raise ConnectionResetError
+            except BlockingIOError:
+                pass
+            except (ConnectionResetError, ConnectionAbortedError):
+                raise
+            finally:
+                sock_central.setblocking(True)
+        except:
+            sock_central = None
 
 # --- Menú Principal ---
 
@@ -617,8 +701,11 @@ def main():
         print("Error en formato de argumentos. Usa host:puerto")
         sys.exit(1)
 
+    check_initial_registration()
+
     # Bucle del Menú
     while True:
+        check_active_connections()
         print_menu()
         choice = input("Opción: ")
         

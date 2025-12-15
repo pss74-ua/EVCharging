@@ -103,6 +103,52 @@ def verify_cp_registration(cp_id):
     finally:
         conn.close()
 
+def load_db_data():
+    """
+    Carga el estado de los CPs desde la BD.
+    Permite que Central 'recuerde' los CPs y sus claves tras un reinicio.
+    """
+    # print("[Arranque] Cargando datos desde Base de Datos...")
+    conn = get_db_connection()
+    if not conn:
+        print("[Error Fatal] No se pudo conectar a la BD.")
+        return
+
+    try:
+        cursor = conn.cursor(dictionary=True)
+        # Recuperamos todo lo necesario para reconstruir la memoria
+        query = "SELECT cp_id, price_kwh, status, symmetric_key, is_registered FROM charge_points"
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        
+        count = 0
+        with cp_states_lock:
+            for row in rows:
+                cp_id = row['cp_id']
+                is_reg = row['is_registered']
+                
+                # Si no existe en memoria, lo inicializamos
+                if cp_id not in cp_states:
+                    cp_states[cp_id] = {}
+
+                # ACTUALIZAMOS SIEMPRE EL FLAG DE REGISTRO
+                cp_states[cp_id]['is_registered'] = is_reg
+
+                # Si está registrado, actualizamos el resto de datos estáticos
+                if is_reg == 1:
+                    # Preservamos datos dinámicos si ya existen (coste, kwh)
+                    cp_states[cp_id]['status'] = row['status'] or 'DISCONNECTED'
+                    
+                    cp_states[cp_id]['price_kwh'] = float(row['price_kwh'])
+                    cp_states[cp_id]['key'] = row['symmetric_key']
+        
+        # print(f"[Arranque] Recuperación completada: {count} CPs cargados en memoria.")
+        
+    except Exception as e:
+        print(f"[Error BD] Fallo en carga inicial: {e}")
+    finally:
+        if conn: conn.close()
+
 # --- UTILIDADES KAFKA ---
 
 def send_kafka_message(topic, message):
@@ -190,8 +236,11 @@ def kafka_consumer_cp_updates():
                     # Telemetría
                     new_status = msg.get('status')
                     old_status = cp_states[cp_id].get('status')
-                    
+
                     cp_states[cp_id]['status'] = new_status
+                    cp_states[cp_id]['session_cost'] = msg.get('session_cost', 0.0)
+                    cp_states[cp_id]['session_kwh'] = msg.get('session_kwh', 0.0)
+                    
                     # Solo actualizamos BD si cambia el estado (para no saturar)
                     if new_status != old_status:
                         update_cp_status_in_db(cp_id, new_status)
@@ -204,6 +253,8 @@ def kafka_consumer_cp_updates():
                     # Restaurar estado a IDLE si acabó
                     if event == "CHARGE_COMPLETE":
                         cp_states[cp_id]['status'] = 'IDLE'
+                        cp_states[cp_id]['session_cost'] = 0.0
+                        cp_states[cp_id]['session_kwh'] = 0.0
                         update_cp_status_in_db(cp_id, 'IDLE')
                     
                     # Reenviar ticket al driver
@@ -267,12 +318,17 @@ def handle_monitor(conn, addr):
                 msg = json.loads(json_str)
 
                 if msg.get('type') == 'MONITOR_STATUS':
-                    status = msg.get('status') # OK / FAULTED
+                    status = msg.get('status') # OK / FAULTED / DISCONNECTED
                     if status == 'FAULTED':
                         with cp_states_lock:
                             cp_states[cp_id]['status'] = 'FAULTED'
                         update_cp_status_in_db(cp_id, 'FAULTED')
                         print(f"[ALERTA] Monitor {cp_id} reporta AVERÍA.")
+                    elif status == 'DISCONNECTED':
+                        with cp_states_lock:
+                            cp_states[cp_id]['status'] = 'DISCONNECTED'
+                        update_cp_status_in_db(cp_id, 'DISCONNECTED')
+                        print(f"[ALERTA] Monitor {cp_id} reporta Engine APAGADO/DESCONECTADO.")
                     elif status == 'OK':
                         # Si estaba averiado y vuelve a OK -> IDLE
                         with cp_states_lock:
@@ -322,7 +378,7 @@ def run_control_menu():
         print("\n--- COMANDOS ADMIN ---")
         print("1. Parar un CP (Stop)")
         print("2. Reanudar un CP (Resume)")
-        print("3. Ver estado de memoria (Debug)")
+        print("3. Monitorizar CPs")
         print("4. Salir")
         
         choice = input("Seleccione opción: ")
@@ -339,7 +395,52 @@ def run_control_menu():
             print("Comando enviado.")
             
         elif choice == '3':
-            print(json.dumps(cp_states, indent=2))
+            # print(json.dumps(cp_states, indent=2))
+            # Imprimimos una tabla de texto simple pero útil
+            # load_db_data()  # Refrescar datos desde BD antes de mostrar
+            print("\nIniciando monitorización en tiempo real...")
+            print("PULSA CTRL+C PARA VOLVER AL MENÚ PRINCIPAL\n")
+            time.sleep(1)
+            
+            try:
+                # Bucle de refresco infinito
+                while True:
+                    load_db_data()  # Refrescar datos desde BD
+                    # Limpiar pantalla (cls en Windows, clear en Linux/Mac)
+                    os.system('cls' if os.name == 'nt' else 'clear')
+                    
+                    print(f"*** MONITORIZACIÓN EN VIVO ({time.strftime('%H:%M:%S')}) ***")
+                    print("-" * 75)
+                    print(f"{'CP ID':<10} | {'STATUS':<15} | {'COSTE (€)':<12} | {'KWH':<10} | {'PRECIO T.'}")
+                    print("-" * 75)
+                    
+                    with cp_states_lock:
+                        if not cp_states:
+                            print(" (Esperando conexión de CPs...)")
+                        
+                        for cid, d in cp_states.items():
+                            if d.get('is_registered', 0) == 0:
+                                continue  # Saltar no registrados
+                            status = d.get('status', 'UNKNOWN')
+                            # Obtenemos los datos de memoria, o 0.0 si no existen
+                            cost = d.get('session_cost', 0.0)
+                            kwh = d.get('session_kwh', 0.0)
+                            price = d.get('price_kwh', 0.0)
+                            
+                            # Coloreado básico si es posible (Charging con asterisco)
+                            marker = ">>" if status == 'CHARGING' else "  "
+                            
+                            print(f"{marker} {cid:<7} | {status:<15} | {cost:06.3f} €     | {kwh:06.3f}     | {price}")
+                            
+                    print("-" * 75)
+                    print("(Ctrl+C para salir)")
+                    
+                    # Refrescar cada 1 segundo
+                    time.sleep(1)
+                    
+            except KeyboardInterrupt:
+                print("\n\nDeteniendo monitorización... Volviendo al menú.")
+                # No hacemos break aquí para que vuelva al while del menú principal
             
         elif choice == '4':
             print("Apagando sistema...")
@@ -358,6 +459,8 @@ if __name__ == "__main__":
         
     socket_port = int(sys.argv[1])
     kafka_bootstrap_servers = sys.argv[2]
+
+    # load_initial_data()
     
     # Iniciar Productor Kafka
     try:
