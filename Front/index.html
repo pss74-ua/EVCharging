@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panel de Monitorización EVCharging Central</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header>
+        <h1>SD EV CHARGING SOLUTION - PANEL CENTRAL</h1>
+        <p>Estado del Sistema: <span id="timestamp"></span></p>
+    </header>
+
+    <main>
+        <h2>Puntos de Recarga (CPs)</h2>
+        <div id="cp-container">
+            <p id="loading">Cargando datos de la API Central...</p>
+        </div>
+        
+        <h2>Registro de Peticiones Recientes</h2>
+        <table id="requests-table">
+            <thead>
+                <tr>
+                    <th>Usuario</th>
+                    <th>CP Solicitado</th>
+                    <th>Hora</th>
+                </tr>
+            </thead>
+            <tbody>
+                </tbody>
+        </table>
+    </main>
+
+    <footer>
+        <p>Consumiendo API REST en <a href="http://localhost:5000/api/v1/status" target="_blank">/api/v1/status</a></p>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>

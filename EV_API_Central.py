@@ -9,6 +9,8 @@ import mysql.connector
 # --- 1. INICIALIZACIÓN DE FLASK ---
 app = Flask(__name__)
 CORS(app)  # Habilitar CORS para todas las rutas y orígenes
+# Habilitar CORS para permitir el acceso desde el navegador (file:///)
+CORS(app)
 
 # --- 2. CONFIGURACIÓN DE LA CONEXIÓN A LA BASE DE DATOS ---
 app.config['MYSQL_HOST'] = 'localhost'
