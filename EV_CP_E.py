@@ -72,6 +72,19 @@ def send_kafka_message(topic, message):
     except Exception as e:
         print(f"[Error Kafka] No se pudo enviar mensaje a {topic}: {e}")
 
+def get_local_ip():
+    """Devuelve la IP real de la interfaz de red conectada."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # No se envía nada, solo se usa para saber qué IP usaría para salir a internet
+        s.connect(('8.8.8.8', 1)) 
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
+
 # --- Hilos de Red ---
 
 def handle_monitor_connection(conn, addr):
@@ -230,7 +243,8 @@ def kafka_consumer_thread(cp_id_arg):
                         "cp_id": cp_id,
                         "timestamp": time.time(),
                         "status": State.STOPPED,
-                        "info": "Parado por Central"
+                        "info": "Parado por Central",
+                        "source_ip": get_local_ip()
                     })
 
                 # Caso 3: Comando de reanudación de Central 
@@ -243,7 +257,8 @@ def kafka_consumer_thread(cp_id_arg):
                             "cp_id": cp_id,
                             "timestamp": time.time(),
                             "status": State.IDLE,
-                            "info": "Reanudado por Central"
+                            "info": "Reanudado por Central",
+                            "source_ip": get_local_ip()
                         })
             
         except json.JSONDecodeError:
@@ -302,7 +317,8 @@ def charging_simulation_thread():
                     "reason": reason,
                     "duration_sec": time.time() - start_time,
                     "total_kwh": total_kwh,
-                    "total_cost": total_cost
+                    "total_cost": total_cost,
+                    "source_ip": get_local_ip()
                 })
                 break # Salir del bucle while
             
@@ -320,7 +336,8 @@ def charging_simulation_thread():
                 "status": State.CHARGING,
                 "driver_id": driver_on_session,
                 "session_kwh": total_kwh,  # Consumo en Kw en tiempo real
-                "session_cost": total_cost # Importe en € en tiempo real
+                "session_cost": total_cost, # Importe en € en tiempo real
+                "source_ip": get_local_ip()
             }
             # Copia los valores para el print (fuera del lock)
             kwh_this_loop = total_kwh
@@ -351,7 +368,8 @@ def charging_simulation_thread():
                 "driver_id": driver_on_session,
                 "duration_sec": time.time() - start_time,
                 "total_kwh": total_kwh,
-                "total_cost": total_cost
+                "total_cost": total_cost,
+                "source_ip": get_local_ip()
             })
         
         # Resetear variables de sesión
@@ -383,7 +401,8 @@ def safe_shutdown():
                 "status": "DISCONNECTED", # <--- ESTADO CLAVE
                 "info": "Engine Shutdown (Manual/Crash)",
                 "session_kwh": 0.0,
-                "session_cost": 0.0
+                "session_cost": 0.0,
+                "source_ip": get_local_ip()
             }
             kafka_producer.send(TOPIC_STATUS_UPDATES, msg)
             kafka_producer.flush()
@@ -537,7 +556,8 @@ def main():
                             "cp_id": cp_id,
                             "timestamp": time.time(),
                             "status": State.FAULTED,
-                            "info": "Fault simulated by user"
+                            "info": "Fault simulated by user",
+                            "source_ip": get_local_ip()
                         })
 
             elif choice == '5': # Resolver Avería 
@@ -554,7 +574,8 @@ def main():
                             "cp_id": cp_id,
                             "timestamp": time.time(),
                             "status": State.IDLE,
-                            "info": "Fault resolved by user"
+                            "info": "Fault resolved by user",
+                            "source_ip": get_local_ip()
                         })
             
             elif choice == '6': # Salir

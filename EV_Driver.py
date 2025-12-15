@@ -18,6 +18,7 @@ import time
 from kafka import KafkaProducer, KafkaConsumer
 from kafka.errors import NoBrokersAvailable
 import threading
+import socket
 
 # --- Constantes ---
 TOPIC_DRIVER_REQUESTS = "driver_requests" # Driver -> Central
@@ -63,6 +64,19 @@ def load_requests_from_file(filename):
     except Exception as e:
         print(f"[Error] No se pudo leer {filename}: {e}")
         return None
+    
+def get_local_ip():
+    """Devuelve la IP real de la interfaz de red conectada."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # No se envía nada, solo se usa para saber qué IP usaría para salir a internet
+        s.connect(('8.8.8.8', 1)) 
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
 
 # --- Hilo Consumidor ---
 
@@ -186,7 +200,8 @@ def request_batch_thread():
         request_msg = {
             "action": "REQUEST_CHARGE",
             "driver_id": driver_id,
-            "cp_id": cp_id
+            "cp_id": cp_id,
+            "source_ip": get_local_ip()
         }
         send_kafka_message(TOPIC_DRIVER_REQUESTS, request_msg)
         
@@ -228,7 +243,8 @@ def run_interactive_loop():
             request_msg = {
                 "action": "REQUEST_CHARGE",
                 "driver_id": driver_id,
-                "cp_id": cp_id
+                "cp_id": cp_id,
+                "source_ip": get_local_ip()
             }
             send_kafka_message(TOPIC_DRIVER_REQUESTS, request_msg)
             

@@ -149,6 +149,36 @@ def load_db_data():
     finally:
         if conn: conn.close()
 
+def log_audit_event(source_ip, entity_id, event_type, details):
+    """
+    Registra un evento en la tabla de auditoría.
+    """
+    conn = get_db_connection()
+    if not conn: return
+
+    try:
+        cursor = conn.cursor()
+        query = """
+            INSERT INTO audit_logs (source_ip, entity_id, event_type, details)
+            VALUES (%s, %s, %s, %s)
+        """
+        # Si details es un diccionario, lo convertimos a string JSON para guardarlo ordenado
+        if isinstance(details, dict):
+            import json
+            details_str = json.dumps(details)
+        else:
+            details_str = str(details)
+
+        cursor.execute(query, (source_ip, entity_id, event_type, details_str))
+        conn.commit()
+        cursor.close()
+        # Opcional: Imprimir en consola también para debug
+        # print(f"[AUDIT] {event_type} - {entity_id}: {details_str}")
+    except Exception as e:
+        print(f"[BD Error] Fallo al escribir audit log: {e}")
+    finally:
+        conn.close()
+
 # --- UTILIDADES KAFKA ---
 
 def send_kafka_message(topic, message):
@@ -176,6 +206,7 @@ def kafka_consumer_driver_requests():
             msg = message.value
             cp_id = msg.get('cp_id')
             driver_id = msg.get('driver_id')
+            source_ip = msg.get('source_ip', 'Kafka/Unknown')
             
             # Lógica de autorización
             auth_success = False
@@ -204,12 +235,15 @@ def kafka_consumer_driver_requests():
                     "driver_id": driver_id, "status": "AUTHORIZED", 
                     "cp_id": cp_id, "info": "Puede conectar el vehículo"
                 })
+                log_audit_event(source_ip, driver_id, "DRIVER_AUTH_OK", f"Autorizado en {cp_id}")
+
             else:
                 print(f"[Lógica] DENEGADO Driver {driver_id} en {cp_id}")
                 send_kafka_message(TOPIC_DRIVER_NOTIFY, {
                     "driver_id": driver_id, "status": "DENIED", 
                     "cp_id": cp_id, "info": "CP no disponible"
                 })
+                log_audit_event(source_ip, driver_id, "DRIVER_AUTH_DENIED", f"Denegado en {cp_id} (CP no IDLE)")
 
     except Exception as e:
         print(f"[Kafka Error] Consumer Requests: {e}")
@@ -228,6 +262,7 @@ def kafka_consumer_cp_updates():
             if stop_event.is_set(): break
             msg = message.value
             cp_id = msg.get('cp_id')
+            source_ip = msg.get('source_ip', 'Kafka/Unknown')
 
             with cp_states_lock:
                 if cp_id not in cp_states: continue # Ignorar desconocidos
@@ -244,6 +279,7 @@ def kafka_consumer_cp_updates():
                     # Solo actualizamos BD si cambia el estado (para no saturar)
                     if new_status != old_status:
                         update_cp_status_in_db(cp_id, new_status)
+                        log_audit_event(source_ip=source_ip, entity_id=cp_id, event_type="STATUS_CHANGE", details={"old": old_status, "new": new_status})
 
                 elif message.topic == TOPIC_CP_TRANSACTIONS:
                     # Fin de carga / Ticket
@@ -299,8 +335,10 @@ def handle_monitor(conn, addr):
                 update_cp_status_in_db(cp_id, 'IDLE')
                 conn.sendall(b"ACK_REGISTER")
                 print(f"[Socket] Monitor {cp_id} Conectado y Autenticado.")
+                log_audit_event(addr[0], cp_id, "AUTH_SUCCESS", "Monitor conectado y autenticado correctamente.")
             else:
                 print(f"[Socket] Rechazado {requested_id}. No registrado en BD.")
+                log_audit_event(addr[0], cp_id, "AUTH_FAILED", "Intento de conexión con credenciales inválidas o CP no registrado.")
                 conn.sendall(b"NACK_NOT_REGISTERED")
                 return
         else:
@@ -324,17 +362,20 @@ def handle_monitor(conn, addr):
                             cp_states[cp_id]['status'] = 'FAULTED'
                         update_cp_status_in_db(cp_id, 'FAULTED')
                         print(f"[ALERTA] Monitor {cp_id} reporta AVERÍA.")
+                        log_audit_event(addr[0], cp_id, "FAULT_REPORTED", "El monitor reportó una avería.")
                     elif status == 'DISCONNECTED':
                         with cp_states_lock:
                             cp_states[cp_id]['status'] = 'DISCONNECTED'
                         update_cp_status_in_db(cp_id, 'DISCONNECTED')
                         print(f"[ALERTA] Monitor {cp_id} reporta Engine APAGADO/DESCONECTADO.")
+                        log_audit_event(addr[0], cp_id, "CONNECTION_LOST", "El monitor cerró la conexión inesperadamente.")
                     elif status == 'OK':
                         # Si estaba averiado y vuelve a OK -> IDLE
                         with cp_states_lock:
                             if cp_states[cp_id]['status'] == 'FAULTED':
                                 cp_states[cp_id]['status'] = 'IDLE'
                                 update_cp_status_in_db(cp_id, 'IDLE')
+                                log_audit_event(addr[0], cp_id, "RECOVERY", "El monitor reportó recuperación del estado de avería.")
             except Exception as e:
                 print(f"[Error Cifrado] No se pudo descifrar mensaje de {cp_id}: {e}")
                 break

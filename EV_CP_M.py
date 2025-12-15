@@ -704,38 +704,52 @@ def main():
     check_initial_registration()
 
     # Bucle del Menú
-    while True:
-        check_active_connections()
-        print_menu()
-        choice = input("Opción: ")
-        
-        if choice == '1':
-            if symmetric_key:
-                deregister_from_registry_http()
+    try:
+        while True:
+            check_active_connections()
+            print_menu()
+            choice = input("Opción: ")
+            
+            if choice == '1':
+                if symmetric_key:
+                    deregister_from_registry_http()
+                else:
+                    register_with_registry_http()
+                
+            elif choice == '2':
+                if sock_engine is None:
+                    # Prioridad 1: Conectar al Engine
+                    connect_to_engine()
+                elif sock_central is None:
+                    # Prioridad 2: Si ya tenemos Engine, intentamos Central
+                    # (connect_to_central ya verifica internamente si tenemos symmetric_key)
+                    connect_to_central()
+                else:
+                    print("\n[Info] Ya estás conectado a Engine y Central. Puedes iniciar monitorización.")
+                
+            elif choice == '3':
+                health_check_loop()
+                
+            elif choice == '4':
+                print("Saliendo...")
+                break
             else:
-                register_with_registry_http()
-            
-        elif choice == '2':
-            if sock_engine is None:
-                # Prioridad 1: Conectar al Engine
-                connect_to_engine()
-            elif sock_central is None:
-                # Prioridad 2: Si ya tenemos Engine, intentamos Central
-                # (connect_to_central ya verifica internamente si tenemos symmetric_key)
-                connect_to_central()
-            else:
-                print("\n[Info] Ya estás conectado a Engine y Central. Puedes iniciar monitorización.")
-            
-        elif choice == '3':
-            health_check_loop()
-            
-        elif choice == '4':
-            print("Saliendo...")
-            if sock_engine: sock_engine.close()
-            if sock_central: sock_central.close()
-            break
-        else:
-            print("Opción no válida.")
+                print("Opción no válida.")
+    finally:
+        cipher = get_cipher(symmetric_key) if symmetric_key else None
+        msg = {
+                "type": "MONITOR_STATUS",
+                "cp_id": cp_id_global,
+                "timestamp": time.time(),
+                "status": "DISCONNECTED",
+                "info": "Monitor shutting down"
+            }
+
+        json_str = json.dumps(msg)                                  # 1. Convertir dict a string
+        encrypted_data = cipher.encrypt(json_str.encode('utf-8'))   # 2. Cifrar
+        sock_central.sendall(encrypted_data) 
+        if sock_engine: sock_engine.close()
+        if sock_central: sock_central.close()
 
 if __name__ == "__main__":
     main()
