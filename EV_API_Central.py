@@ -9,8 +9,6 @@ import mysql.connector
 # --- 1. INICIALIZACIÓN DE FLASK ---
 app = Flask(__name__)
 CORS(app)  # Habilitar CORS para todas las rutas y orígenes
-# Habilitar CORS para permitir el acceso desde el navegador (file:///)
-CORS(app)
 
 # --- 2. CONFIGURACIÓN DE LA CONEXIÓN A LA BASE DE DATOS ---
 app.config['MYSQL_HOST'] = 'localhost'
@@ -63,6 +61,20 @@ def get_system_status():
         # Manejo de errores
         print(f"[ERROR GET] {e}")
         return jsonify({'error': True, 'message': f'Error Occurred: {e}', 'data': None}), 500
+    
+@app.route('/api/v1/audit', methods=['GET'])
+def get_audit_logs():
+    """Devuelve los últimos registros de auditoría."""
+    try:
+        cur = mysql.connection.cursor()
+
+        query = 'SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 10'        
+        cur.execute(query)
+        logs = cur.fetchall()
+        cur.close()
+        return jsonify(logs), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # --- 3. LÓGICA DE EJECUCIÓN (Punto de entrada) ---
 if __name__ == "__main__":

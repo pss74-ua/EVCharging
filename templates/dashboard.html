@@ -20,6 +20,7 @@
         .badge { display: inline-block; padding: 5px 10px; border-radius: 15px; color: white; font-weight: bold; font-size: 0.9em; }
         .bg-IDLE { background: #28a745; }
         .bg-CHARGING { background: #007bff; }
+        .bg-AUTHORIZED { background: #17a2b8; }
         .bg-FAULTED { background: #dc3545; }
         .bg-STOPPED { background: #fd7e14; }
         .bg-DISCONNECTED { background: #6c757d; }
@@ -31,9 +32,29 @@
     <div id="cp-container" class="grid">
         </div>
 
+    <div id="status-container"></div>
+
+    <h2 style="text-align: center; margin-top: 40px; color: #333;">Últimos Eventos del Sistema</h2>
+    <div style="width: 90%; margin: 0 auto; overflow-x: auto;">
+        <table border="1" style="width: 100%; border-collapse: collapse; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
+            <thead>
+                <tr style="background-color: #007bff; color: white;">
+                    <th style="padding: 10px;">Hora</th>
+                    <th style="padding: 10px;">Origen (IP)</th>
+                    <th style="padding: 10px;">Entidad</th>
+                    <th style="padding: 10px;">Evento</th>
+                    <th style="padding: 10px;">Detalles</th>
+                </tr>
+            </thead>
+            <tbody id="audit-table-body">
+                </tbody>
+        </table>
+    </div>
+
     <script>
         // URL de tu API Central
         const API_URL = '/api/v1/status';
+        const API_AUDIT = "/api/v1/audit";
 
         async function fetchStatus() {
             try {
@@ -43,23 +64,29 @@
                 const container = document.getElementById('cp-container');
                 container.innerHTML = ''; // Limpiar
 
-                if(data.cp_list) {
-                    data.cp_list.forEach(cp => {
-                        // Determinar clase CSS basada en estado
-                        const statusClass = `status-${cp.status || 'DISCONNECTED'}`;
-                        const bgClass = `bg-${cp.status || 'DISCONNECTED'}`;
-                        
-                        const html = `
-                            <div class="card ${statusClass}">
-                                <h2>${cp.cp_id}</h2>
-                                <p><strong>${cp.location}</strong></p>
-                                <span class="badge ${bgClass}">${cp.status || 'OFFLINE'}</span>
-                                <p>${cp.price_kwh} €/kWh</p>
-                            </div>
-                        `;
-                        container.innerHTML += html;
-                    });
-                }
+                const listaCPs = Array.isArray(data) ? data : (data.cp_list || []);
+
+                listaCPs.forEach(cp => {
+                    const statusClass = `status-${cp.status || 'DISCONNECTED'}`;
+                    const bgClass = `bg-${cp.status || 'DISCONNECTED'}`;
+                    
+                    const regText = (cp.is_registered == 1) ? 
+                        '<span style="color:green; font-size:0.8em">✔ Registrado</span>' : 
+                        '<span style="color:red; font-size:0.8em">❌ No Registrado</span>';
+
+                    //const driverHtml = cp.current_driver ? 
+                    //    `<p style="color: #007bff; font-weight: bold;">🚗 ${cp.current_driver}</p>` : '';
+
+                    const html = `
+                        <div class="card ${statusClass}">
+                            <div>${regText}</div> 
+                            <h2>${cp.cp_id}</h2>
+                            <p><strong>${cp.location}</strong></p>
+                            <span class="badge ${bgClass}">${cp.status || 'OFFLINE'}</span>
+                            <p>${cp.price_kwh} €/kWh</p>
+                    `;
+                    container.innerHTML += html;
+                });
             } catch (error) {
                 console.error('Error fetching data:', error);
             }
@@ -68,6 +95,35 @@
         // Refrescar cada 2 segundos
         setInterval(fetchStatus, 2000);
         fetchStatus();
+
+        // NUEVA FUNCIÓN PARA LA TABLA
+        async function updateAuditTable() {
+            try {
+                const response = await fetch(API_AUDIT);
+                const logs = await response.json();
+                const tbody = document.getElementById('audit-table-body');
+                tbody.innerHTML = '';
+
+                logs.forEach(log => {
+                    const row = `
+                        <tr>
+                            <td style="padding: 8px;">${log.timestamp}</td>
+                            <td style="padding: 8px;">${log.source_ip}</td>
+                            <td style="padding: 8px;">${log.entity_id || '-'}</td>
+                            <td style="padding: 8px; font-weight: bold;">${log.event_type}</td>
+                            <td style="padding: 8px; font-size: 0.9em; color: #555;">${log.details || ''}</td>
+                        </tr>
+                    `;
+                    tbody.innerHTML += row;
+                });
+            } catch (error) {
+                console.error("Error audit logs:", error);
+            }
+        }
+
+        // Refresco cada 2 segundos
+        setInterval(updateAuditTable, 2000);
+        updateAuditTable();
     </script>
 </body>
 </html>
