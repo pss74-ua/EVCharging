@@ -36,10 +36,15 @@ kafka_producer = None
 kafka_bootstrap_servers = None
 socket_port = None
 stop_event = threading.Event()
+local_weather_alerts = {}
 
 # Estado en memoria (se sincroniza con BD)
 cp_states = {} 
 cp_states_lock = threading.Lock()
+
+from collections import deque
+application_messages = deque(maxlen=10)
+_initial_sync_complete = False # Bandera para controlar la primera ejecución
 
 # --- Funciones de Cifrado ---
 
@@ -79,6 +84,85 @@ def update_cp_status_in_db(cp_id, status, driver_id=None):
         print(f"[BD Error] Al actualizar status de {cp_id}: {e}")
     finally:
         conn.close()
+
+def cp_state_synchronization_thread():
+    """
+    Hilo que realiza la sincronización completa de cp_states desde la BD
+    y gestiona la lógica de comandos por alerta climática (weather_alert).
+    """
+    global local_weather_alerts, _initial_sync_complete
+    print("[Sincronización] Hilo de sincronización de estado y alerta climática iniciado.")
+    
+    while not stop_event.is_set():
+        time.sleep(5) # Pollear la BD cada 5 segundos
+
+        db_connection = None
+        try:
+            db_connection = mysql.connector.connect(**DB_CONFIG)
+            cursor = db_connection.cursor(dictionary=True) 
+            
+            query = "SELECT cp_id, location, price_kwh, status, symmetric_key, is_registered, weather_alert FROM charge_points"
+            cursor.execute(query)
+            cp_data_from_db = cursor.fetchall()
+            cursor.close()
+            
+            is_first_run = not _initial_sync_complete # Comprueba si es la primera vez
+            
+            with cp_states_lock:
+                for row in cp_data_from_db:
+                    cp_id = row['cp_id']
+                    
+                    if cp_id not in cp_states:
+                         cp_states[cp_id] = {}
+                         
+                    # 1. SINCRONIZACIÓN COMPLETA DE cp_states
+                    # ... [Sincronización de campos de estado (location, price, key, etc.)] ...
+                    
+                    is_alert_active = row['weather_alert']
+                    
+                    # SI ES LA PRIMERA EJECUCIÓN: SOLO INICIALIZAR ESTADO LOCAL Y SALTAR COMANDO
+                    if is_first_run:
+                        local_weather_alerts[cp_id] = is_alert_active
+                        continue # Pasa al siguiente CP
+                        
+                    # 3. DETECCIÓN DE TRANSICIÓN DE ESTADO (Solo después de la primera corrida)
+                    
+                    # Detectar TRANSICIÓN de estado de alerta
+                    if is_alert_active != local_weather_alerts.get(cp_id):
+                        
+                        command = ""
+                        if is_alert_active:
+                            # TRANSICIÓN: OK -> ALERTA (Enviar STOP)
+                            print(f"[ALERTA CLIMA] Detectada alerta en DB para {cp_id}. Enviando STOP.")
+                            command = "STOP_COMMAND"
+                            cp_states[cp_id]['status'] = 'STOPPED' 
+                        else:
+                            # TRANSICIÓN: ALERTA -> OK (Enviar RESUME)
+                            print(f"[ALERTA CLIMA] Detectada cancelación para {cp_id}. Enviando RESUME.")
+                            command = "RESUME_COMMAND"
+                            # Si no está cargando, lo devuelve a IDLE
+                            if cp_states[cp_id]['status'] != 'CHARGING':
+                                cp_states[cp_id]['status'] = 'IDLE' 
+                            
+                        # Enviar comando Kafka
+                        auth_topic = f"cp_auth_{cp_id}"
+                        send_kafka_message(auth_topic, {"action": command})
+
+                        # Actualizar el estado local
+                        local_weather_alerts[cp_id] = is_alert_active
+            
+            # Marcar la sincronización inicial como completa
+            if is_first_run:
+                _initial_sync_complete = True
+                #print("[Sincronización] Inicial completada. Empezando a detectar transiciones.")
+                            
+        except mysql.connector.Error as err:
+            print(f"[Error BD Polling] {err}")
+        except Exception as e:
+            print(f"[Error Polling] {e}")
+        finally:
+            if db_connection and db_connection.is_connected():
+                db_connection.close()
 
 def verify_cp_registration(cp_id):
     """
@@ -446,42 +530,36 @@ def run_control_menu():
             try:
                 # Bucle de refresco infinito
                 while True:
-                    load_db_data()  # Refrescar datos desde BD
-                    # Limpiar pantalla (cls en Windows, clear en Linux/Mac)
-                    os.system('cls' if os.name == 'nt' else 'clear')
+                    os.system('cls' if os.name == 'nt' else 'clear') 
                     
                     print(f"*** MONITORIZACIÓN EN VIVO ({time.strftime('%H:%M:%S')}) ***")
-                    print("-" * 75)
-                    print(f"{'CP ID':<10} | {'STATUS':<15} | {'COSTE (€)':<12} | {'KWH':<10} | {'PRECIO T.'}")
-                    print("-" * 75)
+                    print("-" * 85)
+                    print(f"{'CP ID':<10} | {'STATUS':<15} | {'COSTE (€)':<12} | {'KWH':<10} | {'PRECIO T.':<10} | {'ALERTA CLIMA'}")
+                    print("-" * 85)
                     
                     with cp_states_lock:
                         if not cp_states:
                             print(" (Esperando conexión de CPs...)")
                         
-                        for cid, d in cp_states.items():
-                            if d.get('is_registered', 0) == 0:
-                                continue  # Saltar no registrados
+                        for cid, d in sorted(cp_states.items()):
                             status = d.get('status', 'UNKNOWN')
-                            # Obtenemos los datos de memoria, o 0.0 si no existen
                             cost = d.get('session_cost', 0.0)
                             kwh = d.get('session_kwh', 0.0)
                             price = d.get('price_kwh', 0.0)
+                            # Usamos el estado de alerta que el hilo de sincronización mantiene
+                            alert = "SI" if local_weather_alerts.get(cid) else "NO" 
                             
-                            # Coloreado básico si es posible (Charging con asterisco)
                             marker = ">>" if status == 'CHARGING' else "  "
                             
-                            print(f"{marker} {cid:<7} | {status:<15} | {cost:06.3f} €     | {kwh:06.3f}     | {price}")
+                            print(f"{marker} {cid:<7} | {status:<15} | {cost:06.3f} €     | {kwh:06.3f}     | {price:<10} | {alert}")
                             
-                    print("-" * 75)
+                    print("-" * 85)
                     print("(Ctrl+C para salir)")
                     
-                    # Refrescar cada 1 segundo
-                    time.sleep(1)
+                    time.sleep(1) # Refrescar cada 1 segundo
                     
             except KeyboardInterrupt:
                 print("\n\nDeteniendo monitorización... Volviendo al menú.")
-                # No hacemos break aquí para que vuelva al while del menú principal
             
         elif choice == '4':
             print("Apagando sistema...")
@@ -517,6 +595,8 @@ if __name__ == "__main__":
     threading.Thread(target=start_socket_server, daemon=True).start()
     threading.Thread(target=kafka_consumer_driver_requests, daemon=True).start()
     threading.Thread(target=kafka_consumer_cp_updates, daemon=True).start()
+    threading.Thread(target=cp_state_synchronization_thread, daemon=True).start()
+    print("Hilo de Sincronización de estado y Alerta Climática iniciado.")
 
     # --- ABRIR DASHBOARD AUTOMÁTICAMENTE ---
     print("Abriendo Dashboard en el navegador...")
