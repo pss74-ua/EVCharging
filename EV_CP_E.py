@@ -21,6 +21,9 @@ import json
 import random
 from kafka import KafkaProducer, KafkaConsumer
 from kafka.errors import NoBrokersAvailable
+import base64
+import hashlib
+from cryptography.fernet import Fernet
 
 # --- Constantes ---
 ENGINE_HOST = '0.0.0.0'  # Escuchar en todas las interfaces
@@ -35,6 +38,7 @@ TOPIC_TRANSACTIONS = "cp_transactions"      # CP -> Central (para tickets/fin de
 cp_id = None                   # ID de este punto de recarga, se recibe del Monitor
 kafka_bootstrap_servers = None
 kafka_producer = None
+symmetric_key = None
 # Evento para sincronizar: el Monitor espera a que Kafka esté listo
 kafka_consumer_ready = threading.Event() 
 
@@ -58,16 +62,41 @@ stop_charging_event = threading.Event()
 
 # --- Funciones Auxiliares ---
 
+def get_cipher(hex_key):
+    """Genera el cifrador Fernet."""
+    try:
+        key_bytes = hashlib.sha256(hex_key.encode('utf-8')).digest()
+        fernet_key = base64.urlsafe_b64encode(key_bytes)
+        return Fernet(fernet_key)
+    except Exception:
+        return None
+    
 def send_kafka_message(topic, message):
-    """Envía un mensaje JSON al topic de Kafka especificado."""
-    global kafka_producer
+    """Envía un mensaje cifrado al topic de Kafka especificado."""
+    global kafka_producer, symmetric_key, cp_id
     try:
         if not kafka_producer:
             print("[Error] Kafka Producer no inicializado.")
             return
         
-        # print(f"[KAFKA->] Enviando a {topic}: {message}") # Descomentar para debug
-        kafka_producer.send(topic, message)
+        final_msg = message
+
+        if symmetric_key:
+            # print(f"[Seguridad] Cifrando mensaje para topic {topic}...") #DEBUG
+            cipher = get_cipher(symmetric_key)
+            if cipher:
+                # 1. Convertir dict a JSON string
+                json_str = json.dumps(message)
+                # 2. Cifrar
+                encrypted_bytes = cipher.encrypt(json_str.encode('utf-8'))
+                # 3. Empaquetar en estructura "Sobre"
+                final_msg = {
+                    "cp_id": cp_id, # Visible para enrutamiento
+                    "encrypted_data": encrypted_bytes.decode('utf-8') # Payload cifrado
+                }
+                # print(f"[KAFKA->] Mensaje CIFRADO enviado a Central: {final_msg}") #DEBUG
+
+        kafka_producer.send(topic, final_msg)
         kafka_producer.flush()
     except Exception as e:
         print(f"[Error Kafka] No se pudo enviar mensaje a {topic}: {e}")
@@ -93,14 +122,20 @@ def handle_monitor_connection(conn, addr):
     Se ejecuta en un hilo por cada conexión de Monitor.
     Recibe el ID del CP y luego atiende peticiones de 'health check'.
     """
-    global cp_id, health_status, lock
+    global cp_id, health_status, lock, symmetric_key
     print(f"[Socket] Monitor conectado desde {addr}")
     
     try:
         # 1. Esperar mensaje de registro del Monitor con el ID del CP
-        reg_data = conn.recv(1024).decode('utf-8')
+        reg_data = conn.recv(2048).decode('utf-8')
         if reg_data.startswith("REGISTER_ID|"):
-            received_id = reg_data.split('|')[1]
+            parts = reg_data.split('|')
+            received_id = parts[1]
+            symmetric_key = parts[2] if len(parts) > 2 else "None"
+            if symmetric_key != "None":
+                print(f"[Seguridad] Clave de cifrado recibida y cargada.")
+            else:
+                print(f"[Seguridad] Sin clave de cifrado (Modo texto plano).")
             
             with lock:
                 if cp_id is None:
@@ -219,6 +254,18 @@ def kafka_consumer_thread(cp_id_arg):
     for message in consumer:
         try:
             msg = message.value
+
+            # print(f"[Seguridad] Descifrando mensaje recibido en topic {authorization_topic}...") #DEBUG
+            try:
+                cipher = get_cipher(symmetric_key)
+                enc_data = msg['encrypted_data']
+                dec_bytes = cipher.decrypt(enc_data.encode('utf-8'))
+                msg = json.loads(dec_bytes.decode('utf-8'))
+                # print(f"[KAFKA<-] Mensaje DESCIFRADO de Central: {msg.get('action')}") #DEBUG
+            except Exception as e:
+                print(f"[Error Seguridad] Fallo al descifrar mensaje de Central: {e}")
+                continue
+
             action = msg.get('action')
             print(f"\n[KAFKA<-] Mensaje recibido de Central: {msg}")
 

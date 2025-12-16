@@ -338,7 +338,11 @@ def deregister_from_registry_http():
 
 def connect_to_engine():
     """Conecta con el Engine (EV_CP_E)."""
-    global sock_engine, engine_addr, cp_id_global
+    global sock_engine, engine_addr, cp_id_global, symmetric_key
+    
+    if not symmetric_key:
+        print("[Engine] ERROR: No tienes clave de seguridad. Regístrate primero en el Registry.")
+        return False
     
     if sock_engine:
         print("[Engine] Ya estás conectado.")
@@ -350,7 +354,7 @@ def connect_to_engine():
     if sock_engine:
         try:
             # Protocolo de saludo con Engine
-            msg = f"REGISTER_ID|{cp_id_global}"
+            msg = f"REGISTER_ID|{cp_id_global}|{symmetric_key}"
             sock_engine.sendall(msg.encode('utf-8'))
             
             sock_engine.settimeout(5.0)

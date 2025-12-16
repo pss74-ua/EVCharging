@@ -181,9 +181,23 @@ def log_audit_event(source_ip, entity_id, event_type, details):
 
 # --- UTILIDADES KAFKA ---
 
-def send_kafka_message(topic, message):
+def send_kafka_message(topic, message, target_cp_id=None):
     try:
-        kafka_producer.send(topic, value=message)
+        final_msg = message
+        if target_cp_id:
+            with cp_states_lock:
+                key = cp_states.get(target_cp_id, {}).get('key')
+            
+            if key:
+                cipher = get_cipher(key)
+                json_str = json.dumps(message)
+                encrypted = cipher.encrypt(json_str.encode('utf-8')).decode('utf-8')
+                final_msg = {
+                    "cp_id": target_cp_id,
+                    "encrypted_data": encrypted
+                }
+                # print(f"[Seguridad] Mensaje cifrado para {target_cp_id} en topic {topic}: {final_msg}") #DEBUG
+        kafka_producer.send(topic, value=final_msg)
         kafka_producer.flush()
     except Exception as e:
         print(f"[Kafka Error] En envío a {topic}: {e}")
@@ -229,7 +243,8 @@ def kafka_consumer_driver_requests():
                     "action": "AUTHORIZE", 
                     "driver_id": driver_id,
                     "price_kwh": price
-                })
+                }, target_cp_id=cp_id)
+
                 # 2. Avisar al Driver
                 send_kafka_message(TOPIC_DRIVER_NOTIFY, {
                     "driver_id": driver_id, "status": "AUTHORIZED", 
@@ -259,9 +274,27 @@ def kafka_consumer_cp_updates():
         )
         print("[Kafka] Escuchando Updates de CPs...")
         for message in consumer:
-            if stop_event.is_set(): break
-            msg = message.value
-            cp_id = msg.get('cp_id')
+            if stop_event.is_set(): break            
+            raw_msg = message.value
+            cp_id = raw_msg.get('cp_id')
+            
+            # LÓGICA DE DESCIFRADO ENTRANTE
+            msg = raw_msg
+            if 'encrypted_data' in raw_msg:
+                # print(f"[Seguridad] Mensaje cifrado recibido de {cp_id}: {raw_msg}") #DEBUG
+                with cp_states_lock:
+                    key = cp_states.get(cp_id, {}).get('key')
+                
+                if key:
+                    try:
+                        cipher = get_cipher(key)
+                        dec = cipher.decrypt(raw_msg['encrypted_data'].encode('utf-8'))
+                        msg = json.loads(dec.decode('utf-8'))
+                        # print(f"[Seguridad] Mensaje de {cp_id} descifrado: {msg}") #DEBUG
+                    except:
+                        print(f"[Seguridad] Error descifrando mensaje de {cp_id}")
+                        continue
+
             source_ip = msg.get('source_ip', 'Kafka/Unknown')
 
             with cp_states_lock:
@@ -463,13 +496,13 @@ def run_control_menu():
         
         if choice == '1':
             tid = input("ID del CP a detener: ")
-            send_kafka_message(f"cp_auth_{tid}", {"action": "STOP_COMMAND"})
+            send_kafka_message(f"cp_auth_{tid}", {"action": "STOP_COMMAND"}, target_cp_id=tid)
             print("Comando enviado.")
             update_cp_status_in_db(tid, 'STOPPED')
             
         elif choice == '2':
             tid = input("ID del CP a reanudar: ")
-            send_kafka_message(f"cp_auth_{tid}", {"action": "RESUME_COMMAND"})
+            send_kafka_message(f"cp_auth_{tid}", {"action": "RESUME_COMMAND"}, target_cp_id=tid)
             print("Comando enviado.")
             update_cp_status_in_db(tid, 'IDLE')
             
@@ -530,7 +563,7 @@ def run_control_menu():
             stop_event.set()
             # Enviar señal de apagado a CPs
             for cid in cp_states:
-                send_kafka_message(f"cp_auth_{cid}", {"action": "CENTRAL_SHUTDOWN"})
+                send_kafka_message(f"cp_auth_{cid}", {"action": "CENTRAL_SHUTDOWN"}, target_cp_id=cid)
             break
 
 # --- MAIN ---
