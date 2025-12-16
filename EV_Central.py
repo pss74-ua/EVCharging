@@ -489,6 +489,42 @@ def start_socket_server():
     except Exception as e:
         print(f"[Socket Fatal] {e}")
 
+def revoke_cp_credentials(cp_id):
+    """
+    Simula una vulnerabilidad: Borra la clave simétrica y desregistra el CP.
+    """
+    print(f"[Seguridad] Revocando claves de {cp_id}...")
+    
+    # 1. Actualizar Base de Datos (Clave a NULL y is_registered a 0)
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            # Borramos clave, quitamos registro y ponemos status DISCONNECTED
+            query = """
+                UPDATE charge_points 
+                SET symmetric_key = NULL, is_registered = 0, status = 'DISCONNECTED' 
+                WHERE cp_id = %s
+            """
+            cursor.execute(query, (cp_id,))
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            print(f"[Error BD] Al revocar: {e}")
+            return
+
+    # 2. Actualizar Memoria (cp_states)
+    with cp_states_lock:
+        if cp_id in cp_states:
+            cp_states[cp_id]['key'] = None
+            cp_states[cp_id]['is_registered'] = 0
+            cp_states[cp_id]['status'] = 'DISCONNECTED'
+    
+    # 3. Auditoría
+    log_audit_event("Central/Admin", cp_id, "KEY_REVOKED", "Claves revocadas por vulnerabilidad. CP fuera de servicio.")
+    print(f"[Seguridad] {cp_id} ha sido expulsado del sistema.")
+
 # --- MENÚ DE CONTROL (TERMINAL) ---
 
 def run_control_menu():
@@ -504,7 +540,8 @@ def run_control_menu():
         print("1. Parar un CP (Stop)")
         print("2. Reanudar un CP (Resume)")
         print("3. Monitorizar CPs")
-        print("4. Salir")
+        print("4. Revocar claves")
+        print("5. Salir")
         
         choice = input("Seleccione opción: ")
         
@@ -518,6 +555,7 @@ def run_control_menu():
             tid = input("ID del CP a reanudar: ")
             send_kafka_message(f"cp_auth_{tid}", {"action": "RESUME_COMMAND"})
             print("Comando enviado.")
+            update_cp_status_in_db(tid, 'IDLE')
             
         elif choice == '3':
             # print(json.dumps(cp_states, indent=2))
@@ -560,8 +598,13 @@ def run_control_menu():
                     
             except KeyboardInterrupt:
                 print("\n\nDeteniendo monitorización... Volviendo al menú.")
-            
+                # No hacemos break aquí para que vuelva al while del menú principal
+
         elif choice == '4':
+            tid = input("ID del CP a revocar: ")
+            revoke_cp_credentials(tid)
+            
+        elif choice == '5':
             print("Apagando sistema...")
             stop_event.set()
             # Enviar señal de apagado a CPs

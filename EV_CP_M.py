@@ -210,6 +210,8 @@ def check_initial_registration():
             if data.get('is_registered') == 1:
                 symmetric_key = data.get('symmetric_key')
                 print(f"[Init] ¡CP ya registrado! Clave recuperada.")
+            else:
+                symmetric_key = None
             
     except Exception:
         print("[Init] No se pudo contactar con el Registry (continuamos como No Registrado).")
@@ -701,11 +703,10 @@ def main():
         print("Error en formato de argumentos. Usa host:puerto")
         sys.exit(1)
 
-    check_initial_registration()
-
     # Bucle del Menú
     try:
         while True:
+            check_initial_registration()
             check_active_connections()
             print_menu()
             choice = input("Opción: ")
