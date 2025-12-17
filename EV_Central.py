@@ -101,7 +101,6 @@ def cp_state_synchronization_thread():
             db_connection = mysql.connector.connect(**DB_CONFIG)
             cursor = db_connection.cursor(dictionary=True) 
             
-            # CORRECCIÓN: Leer la columna ya renombrada 'weather_temperature'
             query = "SELECT cp_id, location, price_kwh, status, symmetric_key, is_registered, weather_temperature FROM charge_points"
             cursor.execute(query)
             cp_data_from_db = cursor.fetchall()
@@ -147,13 +146,15 @@ def cp_state_synchronization_thread():
                             # TRANSICIÓN: OK -> ALERTA (T <= 0.0)
                             print(f"[ALERTA CLIMA] Detectada temperatura de {current_temp}°C en BD para {cp_id}. Enviando STOP.")
                             command = "STOP_COMMAND"
-                            cp_states[cp_id]['status'] = 'STOPPED' 
+                            cp_states[cp_id]['status'] = 'STOPPED'
+                            update_cp_status_in_db(cp_id, 'STOPPED')
                         else:
                             # TRANSICIÓN: ALERTA -> OK (T > 0.0)
                             print(f"[ALERTA CLIMA] Detectada temperatura de {current_temp}°C para {cp_id}. Enviando RESUME.")
                             command = "RESUME_COMMAND"
                             if cp_states[cp_id]['status'] != 'CHARGING':
                                 cp_states[cp_id]['status'] = 'IDLE' 
+                                update_cp_status_in_db(cp_id, 'IDLE')
                             
                         # ENVIAR COMANDO KAFKA (Se asegura la ejecución)
                         auth_topic = f"cp_auth_{cp_id}"
