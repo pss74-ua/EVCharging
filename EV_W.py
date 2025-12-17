@@ -110,9 +110,17 @@ def monitoring_loop():
 def main():
     global central_api_url, openweather_api_key
     if len(sys.argv) != 3:
+        print("Uso: python EV_W.py <URL_SERVIDOR> <ARCHIVO_KEY>")
         sys.exit(1)
     central_api_url = sys.argv[1]
-    openweather_api_key = sys.argv[2]
+    key_file = sys.argv[2]
+
+    try:
+        with open(key_file, 'r') as f:
+            openweather_api_key = f.read().strip()
+    except Exception as e:
+        print(f"Error leyendo el archivo de clave: {e}")
+        sys.exit(1)
     
     print(f"--- EV Weather Control (EV_W) ---")
     load_all_cp_locations_from_api()

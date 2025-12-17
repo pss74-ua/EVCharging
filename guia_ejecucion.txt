@@ -1,0 +1,118 @@
+==============================================================================
+GUÍA DE EJECUCIÓN - SISTEMA EV CHARGING (RELEASE 2)
+==============================================================================
+
+REQUISITOS PREVIOS:
+1. Docker Desktop debe estar corriendo.
+2. Python 3.13 instalado.
+3. Entorno virtual creado con las librerías instaladas (kafka-python, flask, etc.).
+4. Debes abrir una TERMINAL DISTINTA para cada componente.
+5. Para el despliegue en varios ordenadores cambiar 'localhost' por la IP correspondiente.
+
+IMPORTANTE:
+- En cada terminal nueva, recuerda activar el entorno virtual antes de ejecutar el comando.
+  > Windows: entvirtual\Scripts\activate
+  > Mac/Linux: source entvirtual/bin/activate
+- Los comandos asumen que estás en la carpeta raíz del proyecto.
+
+==============================================================================
+PASO 1: INFRAESTRUCTURA (BASE DE DATOS Y KAFKA)
+==============================================================================
+Descripción: Arranca el contenedor de MySQL y el Broker de Kafka.
+IMPORTANTE: Cambiar la IP en docker-compose.yml de KAFKA_ADVERTISED_LISTENERS
+
+Comando:
+docker-compose up -d
+
+(Espera unos 30 segundos hasta que Kafka y MySQL estén totalmente listos).
+
+==============================================================================
+PASO 2: CORE DEL SISTEMA (EJECUTAR EN ESTE ORDEN)
+==============================================================================
+
+-- TERMINAL 1: API REST DE CENTRAL (Dashboard y Comunicación Web) --
+Descripción: Expone los datos para el Front y para EV_W.
+Comando:
+python EV_API_Central.py
+
+-- TERMINAL 2: REGISTRY (API REST HTTP) --
+Descripción: Permite dar de alta CPs y obtener claves de seguridad.
+Comando:
+python EV_Registry.py
+
+-- TERMINAL 3: EV CENTRAL (Lógica Principal) --
+Descripción: Gestiona sockets, Kafka y lógica de negocio.
+Argumentos: <puerto_socket_escucha> <kafka_broker>
+Comando:
+python EV_Central.py 9090 localhost:9092
+
+==============================================================================
+PASO 3: SERVICIOS EXTERNOS
+==============================================================================
+
+-- TERMINAL 4: WEATHER CONTROL (EV_W) --
+Descripción: Monitoriza el clima y avisa a Central si hay temperaturas bajo cero.
+Argumentos: <url_api_central> <key_file_openweather>
+Comando:
+python EV_W.py localhost:5000 API_KEY.txt
+
+==============================================================================
+PASO 4: PUNTOS DE RECARGA
+==============================================================================
+Nota: Si quieres simular un segundo CP, abre otras dos terminales y usa puertos distintos (ej: 10002).
+
+-- TERMINAL 5: ENGINE (EV_CP_E) --
+Descripción: El motor físico del cargador. Escucha al Monitor y habla con Kafka.
+Argumentos: <kafka_broker> <puerto_escucha_engine>
+Comando:
+python EV_CP_E.py localhost:9092 10001
+
+-- TERMINAL 6: MONITOR (EV_CP_M) --
+Descripción: La pantalla/inteligencia del cargador. Se conecta al Engine, Registry y Central.
+Argumentos: <engine_host:port> <central_host:port> <registry_host:port> <CP_ID>
+Comando:
+python EV_CP_M.py localhost:10001 localhost:9090 localhost:6000 CP1
+
+-- ALTERNATIVAMENTE, para ejecutar varios CPs a la vez --
+start_cps.bat 7 (IMPORTANTE: Cambiar las IPs dentro del archivo)
+
+Instrucciones Monitor:
+1. En el menú, elige opción 1 para REGISTRARTE (obtiene clave).
+2. Elige opción 2 para CONECTAR a Engine y Central.
+3. Elige opción 3 para INICIAR MONITORIZACIÓN.
+
+==============================================================================
+PASO 5: CONDUCTORES
+==============================================================================
+
+-- TERMINAL 7: DRIVER (APP MÓVIL) --
+Descripción: Solicita cargas e interactúa con el sistema.
+Argumentos: <kafka_broker> <ID_CLIENTE> [archivo_batch_opcional]
+
+Opción A (Interactivo):
+python EV_Driver.py localhost:9092 DRIVER1
+
+Opción B (Automático):
+python EV_Driver.py localhost:9092 DRIVER1 requests_files/requests1.txt
+
+-- ALTERNATIVAMENTE, para ejecutar varios drivers a la vez --
+start_drivers.bat 5 (IMPORTANTE: Cambiar las IPs dentro del archivo)
+
+==============================================================================
+PASO 6: VISUALIZACIÓN (DASHBOARD)
+==============================================================================
+Abre tu navegador web (Chrome, Firefox, etc.) e ingresa a:
+
+http://localhost:5000
+
+Allí verás el estado de los cargadores, temperaturas y logs de auditoría en tiempo real.
+
+==============================================================================
+RESUMEN DE PUERTOS USADOS
+==============================================================================
+5000: API Central (HTTP)
+6000: API Registry (HTTP)
+9090: Socket Central (TCP)
+9092: Kafka Broker
+3306: MySQL Database
+10001: Socket Engine CP1 (TCP)
