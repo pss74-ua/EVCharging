@@ -81,7 +81,7 @@
                         <div class="card ${statusClass}">
                             <div>${regText}</div> 
                             <h2>${cp.cp_id}</h2>
-                            <p><strong>${cp.location}</strong></p>
+                            <p><strong>${cp.location}</strong> ${cp.weather_temperature}ºC</p>
                             <span class="badge ${bgClass}">${cp.status || 'OFFLINE'}</span>
                             <p>${cp.price_kwh} €/kWh</p>
                     `;

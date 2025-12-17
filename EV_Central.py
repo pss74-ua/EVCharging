@@ -40,7 +40,7 @@ local_weather_alerts = {}
 
 # Estado en memoria (se sincroniza con BD)
 cp_states = {} 
-cp_states_lock = threading.Lock()
+cp_states_lock = threading.RLock()
 
 from collections import deque
 application_messages = deque(maxlen=10)
@@ -128,36 +128,38 @@ def cp_state_synchronization_thread():
                     # Determinar el estado de alerta BOOLEANO basado en el umbral
                     is_alert_active = (current_temp is not None) and (current_temp <= 0.0)
 
-                    # Obtener la última temperatura almacenada localmente
-                    last_temp_local = local_weather_alerts.get(cp_id)
-                    # Determinar el estado de alerta anterior basado en el umbral
-                    is_alert_active_local = (last_temp_local is not None) and (last_temp_local <= 0.0)
+                    # Estado actual en memoria (para saber si alguien lo reactivó manualmente)
+                    current_status = cp_states[cp_id].get('status')
                     
-                    # SI ES LA PRIMERA EJECUCIÓN: Solo sincronizar local_weather_alerts
-                    if is_first_run:
-                        local_weather_alerts[cp_id] = current_temp 
-                        continue
+                    command = ""
+                    # CASO 1: Hace frío y el CP NO está parado (Alguien lo reactivó o cambió el clima)
+                    if is_alert_active and current_status != 'STOPPED':
+                        print(f"[ALERTA CLIMA] Temp {current_temp}°C insegura en {cp_id}. Forzando STOP.")
+                        command = "STOP_COMMAND"
                         
-                    # 3. DETECCIÓN DE TRANSICIÓN DE ESTADO (Cruce de umbral de 0°C)
-                    if is_alert_active != is_alert_active_local:
-                        
-                        command = ""
-                        if is_alert_active:
-                            # TRANSICIÓN: OK -> ALERTA (T <= 0.0)
-                            print(f"[ALERTA CLIMA] Detectada temperatura de {current_temp}°C en BD para {cp_id}. Enviando STOP.")
-                            command = "STOP_COMMAND"
-                            cp_states[cp_id]['status'] = 'STOPPED'
-                            update_cp_status_in_db(cp_id, 'STOPPED')
-                        else:
-                            # TRANSICIÓN: ALERTA -> OK (T > 0.0)
-                            print(f"[ALERTA CLIMA] Detectada temperatura de {current_temp}°C para {cp_id}. Enviando RESUME.")
+                        # Actualizamos estado inmediatamente
+                        cp_states[cp_id]['status'] = 'STOPPED'
+                        update_cp_status_in_db(cp_id, 'STOPPED')
+
+                    # CASO 2: Ya no hace frío, el CP sigue parado y queremos que vuelva a funcionar
+                    # (Aquí sí usamos lógica de transición para no enviar RESUME infinitos si está IDLE)
+                    elif not is_alert_active and current_status == 'STOPPED':
+                        # Verificamos que sea un cambio de clima (o recuperación)
+                        last_temp_local = local_weather_alerts.get(cp_id)
+                        was_alert_active_local = (last_temp_local is not None) and (last_temp_local <= 0.0)
+
+                        if was_alert_active_local: # Solo si venimos de una alerta
+                            print(f"[CLIMA OK] Temp {current_temp}°C segura en {cp_id}. Enviando RESUME.")
                             command = "RESUME_COMMAND"
-                            if cp_states[cp_id]['status'] != 'CHARGING':
-                                cp_states[cp_id]['status'] = 'IDLE' 
-                                update_cp_status_in_db(cp_id, 'IDLE')
                             
-                        # ENVIAR COMANDO KAFKA (Se asegura la ejecución)
-                        auth_topic = f"cp_auth_{cp_id}"
+                            cp_states[cp_id]['status'] = 'IDLE'
+                            update_cp_status_in_db(cp_id, 'IDLE')
+                                                        
+                    # ENVIAR COMANDO KAFKA (Se asegura la ejecución)
+                    auth_topic = f"cp_auth_{cp_id}"
+                    if cp_states[cp_id].get('symmetric_key') and command:
+                        send_kafka_message(auth_topic, {"action": command}, target_cp_id=cp_id)
+                    elif command:
                         send_kafka_message(auth_topic, {"action": command})
 
                     # 4. Actualizar el estado local con la nueva temperatura
@@ -174,6 +176,7 @@ def cp_state_synchronization_thread():
         finally:
             if db_connection and db_connection.is_connected():
                 db_connection.close()
+                
 def verify_cp_registration(cp_id):
     """
     Verifica si el CP está registrado y obtiene su CLAVE SIMÉTRICA.
@@ -328,6 +331,7 @@ def kafka_consumer_driver_requests():
                     price = state_info.get('price_kwh', 0.50)
                     # Cambio de estado provisional
                     cp_states[cp_id]['status'] = 'AUTHORIZED'
+                    cp_states[cp_id]['driver_id'] = driver_id
                     update_cp_status_in_db(cp_id, 'AUTHORIZED')
 
             if auth_success:
@@ -402,6 +406,8 @@ def kafka_consumer_cp_updates():
                     cp_states[cp_id]['status'] = new_status
                     cp_states[cp_id]['session_cost'] = msg.get('session_cost', 0.0)
                     cp_states[cp_id]['session_kwh'] = msg.get('session_kwh', 0.0)
+                    if msg.get('driver_id'):
+                        cp_states[cp_id]['driver_id'] = msg.get('driver_id')
                     
                     # Solo actualizamos BD si cambia el estado (para no saturar)
                     if new_status != old_status:
@@ -414,10 +420,12 @@ def kafka_consumer_cp_updates():
                     print(f"[Transacción] Ticket recibido: {event} en {cp_id}")
                     
                     # Restaurar estado a IDLE si acabó
-                    if event == "CHARGE_COMPLETE":
-                        cp_states[cp_id]['status'] = 'IDLE'
+                    if event in ["CHARGE_COMPLETE", "CHARGE_FAILED", "CHARGE_STOPPED_BY_CENTRAL"]:
                         cp_states[cp_id]['session_cost'] = 0.0
                         cp_states[cp_id]['session_kwh'] = 0.0
+                        cp_states[cp_id]['driver_id'] = None
+                    if event == "CHARGE_COMPLETE":
+                        cp_states[cp_id]['status'] = 'IDLE'
                         update_cp_status_in_db(cp_id, 'IDLE')
                     
                     # Reenviar ticket al driver
@@ -563,6 +571,7 @@ def revoke_cp_credentials(cp_id):
             cp_states[cp_id]['key'] = None
             cp_states[cp_id]['is_registered'] = 0
             cp_states[cp_id]['status'] = 'DISCONNECTED'
+            cp_states[cp_id]['driver_id'] = None
     
     # 3. Auditoría
     log_audit_event("Central/Admin", cp_id, "KEY_REVOKED", "Claves revocadas por vulnerabilidad. CP fuera de servicio.")
@@ -614,9 +623,9 @@ def run_control_menu():
                     os.system('cls' if os.name == 'nt' else 'clear') 
                     
                     print(f"*** MONITORIZACIÓN EN VIVO ({time.strftime('%H:%M:%S')}) ***")
-                    print("-" * 85)
-                    print(f"{'CP ID':<10} | {'STATUS':<15} | {'COSTE (€)':<12} | {'KWH':<10} | {'PRECIO T.':<10} | {'ALERTA CLIMA'}")
-                    print("-" * 85)
+                    print("-" * 95)
+                    print(f"{'CP ID':<10} | {'STATUS':<15} | {'DRIVER':<10} | {'COSTE (€)':<12} | {'KW/H':<10} | {'PRECIO (€)':<10} | {'TEMP ºC'}")
+                    print("-" * 95)
                     
                     with cp_states_lock:
                         if not cp_states:
@@ -624,6 +633,7 @@ def run_control_menu():
                         
                         for cid, d in sorted(cp_states.items()):
                             status = d.get('status', 'UNKNOWN')
+                            driver = d.get('driver_id') if d.get('driver_id') else "N/A"
                             cost = d.get('session_cost', 0.0)
                             kwh = d.get('session_kwh', 0.0)
                             price = d.get('price_kwh', 0.0)
@@ -632,9 +642,9 @@ def run_control_menu():
                             
                             marker = ">>" if status == 'CHARGING' else "  "
                             
-                            print(f"{marker} {cid:<7} | {status:<15} | {cost:06.3f} €     | {kwh:06.3f}     | {price:<10} | {alert}")
+                            print(f"{marker} {cid:<7} | {status:<15} | {driver:<10} | {cost:06.3f} €     | {kwh:06.3f}     | {price:<10} | {alert}")
                             
-                    print("-" * 85)
+                    print("-" * 95)
                     print("(Ctrl+C para salir)")
                     
                     time.sleep(1) # Refrescar cada 1 segundo

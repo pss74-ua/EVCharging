@@ -9,7 +9,7 @@ import threading
 # --- CONSTANTES DE CONFIGURACIÓN ---
 OPENWEATHER_BASE_URL = "http://api.openweathermap.org/data/2.5/weather"
 ALERT_THRESHOLD_C = 0 
-CHECK_INTERVAL_SECONDS = 10 # Tiempo automático entre chequeos (ajusta según necesites)
+CHECK_INTERVAL_SECONDS = 4 # Tiempo automático entre chequeos (ajusta según necesites)
 
 # --- VARIABLES GLOBALES ---
 CP_LOCATIONS = {} 
