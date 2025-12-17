@@ -10,6 +10,7 @@ REQUISITOS PREVIOS:
 5. Para el despliegue en varios ordenadores cambiar 'localhost' por la IP correspondiente.
 
 IMPORTANTE:
+- Crear el entorno virtual en la caperta del proyecto con el archivo setup_env.bat
 - En cada terminal nueva, recuerda activar el entorno virtual antes de ejecutar el comando.
   > Windows: entvirtual\Scripts\activate
   > Mac/Linux: source entvirtual/bin/activate
@@ -23,6 +24,8 @@ IMPORTANTE: Cambiar la IP en docker-compose.yml de KAFKA_ADVERTISED_LISTENERS
 
 Comando:
 docker-compose up -d
+
+En MySQL Workbench ejecutar script_db.sql
 
 (Espera unos 30 segundos hasta que Kafka y MySQL estén totalmente listos).
 
