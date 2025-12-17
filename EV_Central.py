@@ -101,12 +101,13 @@ def cp_state_synchronization_thread():
             db_connection = mysql.connector.connect(**DB_CONFIG)
             cursor = db_connection.cursor(dictionary=True) 
             
-            query = "SELECT cp_id, location, price_kwh, status, symmetric_key, is_registered, weather_alert FROM charge_points"
+            # CORRECCIÓN: Leer la columna ya renombrada 'weather_temperature'
+            query = "SELECT cp_id, location, price_kwh, status, symmetric_key, is_registered, weather_temperature FROM charge_points"
             cursor.execute(query)
             cp_data_from_db = cursor.fetchall()
             cursor.close()
             
-            is_first_run = not _initial_sync_complete # Comprueba si es la primera vez
+            is_first_run = not _initial_sync_complete
             
             with cp_states_lock:
                 for row in cp_data_from_db:
@@ -115,46 +116,55 @@ def cp_state_synchronization_thread():
                     if cp_id not in cp_states:
                          cp_states[cp_id] = {}
                          
-                    # 1. SINCRONIZACIÓN COMPLETA DE cp_states
-                    # ... [Sincronización de campos de estado (location, price, key, etc.)] ...
+                    # 1. SINCRONIZACIÓN COMPLETA DE cp_states (Estabilidad)
+                    cp_states[cp_id]['location'] = row.get('location')
+                    cp_states[cp_id]['price_kwh'] = float(row.get('price_kwh', 0.0))
+                    cp_states[cp_id]['symmetric_key'] = row.get('symmetric_key')
+                    cp_states[cp_id]['is_registered'] = row.get('is_registered', 0)
+                    cp_states[cp_id]['status'] = row.get('status', 'DISCONNECTED') or 'DISCONNECTED'
                     
-                    is_alert_active = row['weather_alert']
+                    # 2. LEER LA TEMPERATURA Y DETERMINAR EL ESTADO DE ALERTA
+                    current_temp = row.get('weather_temperature') # Valor decimal (ej: -0.2)
                     
-                    # SI ES LA PRIMERA EJECUCIÓN: SOLO INICIALIZAR ESTADO LOCAL Y SALTAR COMANDO
+                    # Determinar el estado de alerta BOOLEANO basado en el umbral
+                    is_alert_active = (current_temp is not None) and (current_temp <= 0.0)
+
+                    # Obtener la última temperatura almacenada localmente
+                    last_temp_local = local_weather_alerts.get(cp_id)
+                    # Determinar el estado de alerta anterior basado en el umbral
+                    is_alert_active_local = (last_temp_local is not None) and (last_temp_local <= 0.0)
+                    
+                    # SI ES LA PRIMERA EJECUCIÓN: Solo sincronizar local_weather_alerts
                     if is_first_run:
-                        local_weather_alerts[cp_id] = is_alert_active
-                        continue # Pasa al siguiente CP
+                        local_weather_alerts[cp_id] = current_temp 
+                        continue
                         
-                    # 3. DETECCIÓN DE TRANSICIÓN DE ESTADO (Solo después de la primera corrida)
-                    
-                    # Detectar TRANSICIÓN de estado de alerta
-                    if is_alert_active != local_weather_alerts.get(cp_id):
+                    # 3. DETECCIÓN DE TRANSICIÓN DE ESTADO (Cruce de umbral de 0°C)
+                    if is_alert_active != is_alert_active_local:
                         
                         command = ""
                         if is_alert_active:
-                            # TRANSICIÓN: OK -> ALERTA (Enviar STOP)
-                            print(f"[ALERTA CLIMA] Detectada alerta en DB para {cp_id}. Enviando STOP.")
+                            # TRANSICIÓN: OK -> ALERTA (T <= 0.0)
+                            print(f"[ALERTA CLIMA] Detectada temperatura de {current_temp}°C en BD para {cp_id}. Enviando STOP.")
                             command = "STOP_COMMAND"
                             cp_states[cp_id]['status'] = 'STOPPED' 
                         else:
-                            # TRANSICIÓN: ALERTA -> OK (Enviar RESUME)
-                            print(f"[ALERTA CLIMA] Detectada cancelación para {cp_id}. Enviando RESUME.")
+                            # TRANSICIÓN: ALERTA -> OK (T > 0.0)
+                            print(f"[ALERTA CLIMA] Detectada temperatura de {current_temp}°C para {cp_id}. Enviando RESUME.")
                             command = "RESUME_COMMAND"
-                            # Si no está cargando, lo devuelve a IDLE
                             if cp_states[cp_id]['status'] != 'CHARGING':
                                 cp_states[cp_id]['status'] = 'IDLE' 
                             
-                        # Enviar comando Kafka
+                        # ENVIAR COMANDO KAFKA (Se asegura la ejecución)
                         auth_topic = f"cp_auth_{cp_id}"
                         send_kafka_message(auth_topic, {"action": command})
 
-                        # Actualizar el estado local
-                        local_weather_alerts[cp_id] = is_alert_active
+                    # 4. Actualizar el estado local con la nueva temperatura
+                    local_weather_alerts[cp_id] = current_temp 
             
             # Marcar la sincronización inicial como completa
             if is_first_run:
                 _initial_sync_complete = True
-                #print("[Sincronización] Inicial completada. Empezando a detectar transiciones.")
                             
         except mysql.connector.Error as err:
             print(f"[Error BD Polling] {err}")
@@ -163,7 +173,6 @@ def cp_state_synchronization_thread():
         finally:
             if db_connection and db_connection.is_connected():
                 db_connection.close()
-
 def verify_cp_registration(cp_id):
     """
     Verifica si el CP está registrado y obtiene su CLAVE SIMÉTRICA.
@@ -584,8 +593,8 @@ def run_control_menu():
                             cost = d.get('session_cost', 0.0)
                             kwh = d.get('session_kwh', 0.0)
                             price = d.get('price_kwh', 0.0)
-                            # Usamos el estado de alerta que el hilo de sincronización mantiene
-                            alert = "SI" if local_weather_alerts.get(cid) else "NO" 
+                            temp_value = local_weather_alerts.get(cid)
+                            alert = f"{temp_value:.1f} °C" if temp_value is not None else "N/A" 
                             
                             marker = ">>" if status == 'CHARGING' else "  "
                             
