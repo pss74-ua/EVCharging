@@ -40,7 +40,7 @@ services:
       MYSQL_ROOT_PASSWORD: psusana    # Usar la misma contraseña de DB_CONFIG
       MYSQL_DATABASE: ev_charging
     ports:
-      - "3306:3306" # Puerto estándar de MySQL/MariaDB
+      - "3307:3306" # Puerto estándar de MySQL/MariaDB
     volumes:
       # Montar el script de inicialización
       - ./init_db.sql:/docker-entrypoint-initdb.d/init_db.sql 

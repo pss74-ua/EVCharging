@@ -133,7 +133,7 @@ def cp_state_synchronization_thread():
                     
                     command = ""
                     # CASO 1: Hace frío y el CP NO está parado (Alguien lo reactivó o cambió el clima)
-                    if is_alert_active and current_status != 'STOPPED':
+                    if is_alert_active and current_status in {'IDLE', 'CHARGING'}:
                         print(f"[ALERTA CLIMA] Temp {current_temp}°C insegura en {cp_id}. Forzando STOP.")
                         command = "STOP_COMMAND"
                         
@@ -437,93 +437,102 @@ def kafka_consumer_cp_updates():
 # --- SERVIDOR SOCKETS (Comunicación Monitor) ---
 
 def handle_monitor(conn, addr):
-    """
-    Gestiona conexión con Monitor. Implementa seguridad Release 2.
-    """
     cp_id = None
     cipher = None
 
     try:
-        # 1. Esperar mensaje de registro
         data = conn.recv(1024).decode('utf-8')
+        if not data: return
         msg = json.loads(data)
         
         if msg.get('type') == 'REGISTER_MONITOR':
             requested_id = msg.get('cp_id')
-            
-            # --- SEGURIDAD RELEASE 2 ---
-            # Verificar en BD si está registrado
             is_valid, cp_data = verify_cp_registration(requested_id)
             
             if is_valid:
                 cp_id = requested_id
-                symmetric_key = cp_data['symmetric_key'] # Esta clave se usa para descifrar futuros mensajes
+                symmetric_key = cp_data['symmetric_key']
                 cipher = get_cipher(symmetric_key)
-
                 with cp_states_lock:
                     cp_states[cp_id] = {
                         'status': 'IDLE', 
                         'price_kwh': float(cp_data['price_kwh']),
-                        'key': symmetric_key
+                        'key': symmetric_key,
+                        'driver_id': None,
+                        'session_kwh': 0.0,
+                        'session_cost': 0.0
                     }
-                
                 update_cp_status_in_db(cp_id, 'IDLE')
                 conn.sendall(b"ACK_REGISTER")
-                print(f"[Socket] Monitor {cp_id} Conectado y Autenticado.")
-                log_audit_event(addr[0], cp_id, "AUTH_SUCCESS", "Monitor conectado y autenticado correctamente.")
+                log_audit_event(addr[0], cp_id, "AUTH_SUCCESS", "Monitor autenticado.")
             else:
-                print(f"[Socket] Rechazado {requested_id}. No registrado en BD.")
-                log_audit_event(addr[0], cp_id, "AUTH_FAILED", "Intento de conexión con credenciales inválidas o CP no registrado.")
                 conn.sendall(b"NACK_NOT_REGISTERED")
                 return
-        else:
-            return
 
-        # 2. Bucle de latido (Estado Monitor)
         while not stop_event.is_set():
-            encrypted_data = conn.recv(2048) # Recibimos bytes (no decode todavía)
+            encrypted_data = conn.recv(2048)
             if not encrypted_data: break
             
             try:
-                # --- AQUÍ OCURRE EL DESCIFRADO ---
                 decrypted_bytes = cipher.decrypt(encrypted_data)
-                json_str = decrypted_bytes.decode('utf-8')
-                msg = json.loads(json_str)
+                msg = json.loads(decrypted_bytes.decode('utf-8'))
 
                 if msg.get('type') == 'MONITOR_STATUS':
-                    status = msg.get('status') # OK / FAULTED / DISCONNECTED
-                    if status == 'FAULTED':
+                    status = msg.get('status')
+                    
+                    # Si el monitor avisa que el Engine ha muerto
+                    if status == 'DISCONNECTED':
+                        with cp_states_lock:
+                            # Notificar al driver si estaba cargando
+                            d_id = cp_states[cp_id].get('driver_id')
+                            if d_id:
+                                fail_msg = {
+                                    "cp_id": cp_id,
+                                    "driver_id": d_id,
+                                    "event": "CHARGE_FAILED",
+                                    "reason": "ENGINE_DISCONNECTED",
+                                    "total_kwh": cp_states[cp_id].get('session_kwh', 0.0),
+                                    "total_cost": cp_states[cp_id].get('session_cost', 0.0)
+                                }
+                                send_kafka_message(TOPIC_DRIVER_NOTIFY, fail_msg)
+                            
+                            cp_states[cp_id]['status'] = 'DISCONNECTED'
+                            cp_states[cp_id]['driver_id'] = None
+                        update_cp_status_in_db(cp_id, 'DISCONNECTED')
+                        break # Cerramos este socket
+
+                    elif status == 'FAULTED':
                         with cp_states_lock:
                             cp_states[cp_id]['status'] = 'FAULTED'
                         update_cp_status_in_db(cp_id, 'FAULTED')
-                        print(f"[ALERTA] Monitor {cp_id} reporta AVERÍA.")
-                        log_audit_event(addr[0], cp_id, "FAULT_REPORTED", "El monitor reportó una avería.")
-                    elif status == 'DISCONNECTED':
-                        with cp_states_lock:
-                            cp_states[cp_id]['status'] = 'DISCONNECTED'
-                        update_cp_status_in_db(cp_id, 'DISCONNECTED')
-                        print(f"[ALERTA] Monitor {cp_id} reporta Engine APAGADO/DESCONECTADO.")
-                        log_audit_event(addr[0], cp_id, "CONNECTION_LOST", "El monitor cerró la conexión inesperadamente.")
-                    elif status == 'OK':
-                        # Si estaba averiado y vuelve a OK -> IDLE
-                        with cp_states_lock:
-                            if cp_states[cp_id]['status'] == 'FAULTED':
-                                cp_states[cp_id]['status'] = 'IDLE'
-                                update_cp_status_in_db(cp_id, 'IDLE')
-                                log_audit_event(addr[0], cp_id, "RECOVERY", "El monitor reportó recuperación del estado de avería.")
+
             except Exception as e:
-                print(f"[Error Cifrado] No se pudo descifrar mensaje de {cp_id}: {e}")
+                print(f"[Error Cifrado] {cp_id}: {e}")
                 break
 
     except Exception as e:
-        print(f"[Socket] Error con {addr}: {e}")
+        print(f"[Socket] Error {addr}: {e}")
     finally:
+        # Bloque de seguridad: Si el socket se rompe (se cierra el Monitor)
         if cp_id:
             with cp_states_lock:
-                if cp_id in cp_states:
-                    cp_states[cp_id]['status'] = 'DISCONNECTED'
+                # Verificar si se quedó una carga a medias
+                if cp_states[cp_id].get('status') in ['CHARGING', 'AUTHORIZED']:
+                    d_id = cp_states[cp_id].get('driver_id')
+                    if d_id:
+                        msg_abort = {
+                            "cp_id": cp_id,
+                            "driver_id": d_id,
+                            "event": "CHARGE_FAILED",
+                            "reason": "CONNECTION_LOST",
+                            "total_kwh": cp_states[cp_id].get('session_kwh', 0.0),
+                            "total_cost": cp_states[cp_id].get('session_cost', 0.0)
+                        }
+                        send_kafka_message(TOPIC_DRIVER_NOTIFY, msg_abort)
+                
+                cp_states[cp_id]['status'] = 'DISCONNECTED'
+                cp_states[cp_id]['driver_id'] = None
             update_cp_status_in_db(cp_id, 'DISCONNECTED')
-            print(f"[Socket] Monitor {cp_id} desconectado.")
         conn.close()
 
 def start_socket_server():

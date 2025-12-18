@@ -298,10 +298,28 @@ def health_check_loop():
                     info = "Engine Simulated Fault"
                     
             except Exception as e:
-                # print(f"[Monitor] Conexión perdida con Engine: {e}")
+                print(f"[DEBUG] Engine caído detectado. Avisando a Central...")
                 new_status = "DISCONNECTED"
-                info = "Engine connection lost (Process stopped)"
-
+                
+                # Crear el mensaje de estado
+                msg = {
+                    "type": "MONITOR_STATUS",
+                    "cp_id": cp_id_global,
+                    "timestamp": time.time(),
+                    "status": new_status,
+                    "info": "Engine connection lost"
+                }
+                
+                # Cifrar y enviar ANTES de cerrar nada
+                try:
+                    json_str = json.dumps(msg)
+                    encrypted_data = cipher.encrypt(json_str.encode('utf-8'))
+                    sock_central.sendall(encrypted_data) 
+                    print("[DEBUG] Notificación enviada a Central con éxito.")
+                except Exception as error_send:
+                    print(f"[DEBUG] No se pudo avisar a Central: {error_send}")
+                
+                break # Salir del bucle para que el Monitor sepa que ha terminado
             # 2. Notificar a Central si hay cambio
             if new_status != current_status:
                 print(f"[Estado] Cambio detectado: {current_status} -> {new_status}")
