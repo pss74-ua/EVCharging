@@ -136,26 +136,33 @@ def kafka_consumer_thread():
                 # --- Lógica de Transacción/Ticket (EVENT) ---
 
                 elif event:
-                    
-                    if event == "CHARGE_COMPLETE":
-                        print(f"  > ¡CARGA FINALIZADA! (Ticket)")
-                    elif event == "CHARGE_FAILED":
-                        print(f"  > ¡CARGA FALLIDA!")
-                        print(f"  > Razón: {msg.get('reason', 'N/A')}")
-                    # Manejo del ticket parcial por parada forzada 
-                    elif event == "CHARGE_STOPPED_BY_CENTRAL":
-                        print(f"  > ¡CARGA DETENIDA POR CENTRAL! (Ticket Parcial)")
+                    # 1. Caso: Inicio de carga (No desbloquea el hilo, solo informa)
+                    if event == "CHARGE_STARTED":
+                        print(f"\n[SISTEMA] ¡Carga en curso!")
+                        print(f"  > Mensaje: {msg.get('info')}")
+                        # No imprimimos ticket ni hacemos .set() aquí
+
+                    # 2. Casos de finalización (Imprimen ticket y desbloquean)
+                    elif event in ["CHARGE_COMPLETE", "CHARGE_FAILED", "CHARGE_STOPPED_BY_CENTRAL"]:
+                        if event == "CHARGE_COMPLETE":
+                            print(f"  > ¡CARGA FINALIZADA! (Ticket)")
+                        elif event == "CHARGE_FAILED":
+                            print(f"  > ¡CARGA FALLIDA!")
+                            print(f"  > Razón: {msg.get('reason', 'N/A')}")
+                        elif event == "CHARGE_STOPPED_BY_CENTRAL":
+                            print(f"  > ¡CARGA DETENIDA POR CENTRAL! (Ticket Parcial)")
+
+                        # Imprimir detalles del ticket (Solo cuando la carga termina)
+                        print(f"  > CP: {cp_id}")
+                        print(f"  > Duración: {msg.get('duration_sec', 0):.2f} seg")
+                        print(f"  > Consumo: {msg.get('total_kwh', 0):.3f} kWh")
+                        print(f"  > Coste Total: {msg.get('total_cost', 0):.2f} €")
+                        
+                        # Desbloquear el hilo principal/batch para la siguiente petición
+                        time_to_next_request.set()
+
                     else:
                         print(f"  > Evento Desconocido: {event}")
-                        
-                    # Imprimir detalles del ticket
-                    print(f"  > CP: {cp_id}")
-                    print(f"  > Duración: {msg.get('duration_sec', 0):.2f} seg")
-                    print(f"  > Consumo: {msg.get('total_kwh', 0):.3f} kWh")
-                    print(f"  > Coste Total: {msg.get('total_cost', 0):.2f} €")
-                    
-                    # Desbloquear el hilo principal/batch para el siguiente paso 
-                    time_to_next_request.set() 
 
                 print("*******************************\n")
 

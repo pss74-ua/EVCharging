@@ -330,6 +330,15 @@ def charging_simulation_thread():
     driver_on_session = current_driver_id 
     
     print(f"[Carga] Iniciando suministro para Driver {driver_on_session}...")
+
+    if driver_on_session != "MANUAL":
+        print(f"[DEBUG] Enviando señal de inicio a {driver_on_session}")
+        send_kafka_message(TOPIC_TRANSACTIONS, { #para que pase por central y pueda ser leído
+            "driver_id": driver_on_session,
+            "cp_id": cp_id,
+            "event": "CHARGE_STARTED",
+            "info": "El punto de recarga ha detectado el vehículo. Suministro iniciado."
+        })
     
     # Bucle de telemetría (cada segundo)
     while not stop_charging_event.is_set():
