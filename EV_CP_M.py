@@ -320,6 +320,34 @@ def health_check_loop():
                     print(f"[DEBUG] No se pudo avisar a Central: {error_send}")
                 
                 break # Salir del bucle para que el Monitor sepa que ha terminado
+
+            try:
+                # Usamos settimeout pequeño para no bloquear el bucle
+                sock_central.settimeout(0.5) 
+                data = sock_central.recv(1024)
+                sock_central.settimeout(None) # Restaurar
+
+                if b"REVOCATION_NOTICE" in data:
+                    print("\n[ALERTA] ¡CENTRAL HA REVOCADO LAS CREDENCIALES!")
+                    print("[Monitor] La clave ya no es válida.")
+                    
+                    # --- AQUÍ ES DONDE CERRAMOS LA CONEXIÓN CON EL ENGINE ---
+                    # print("[Monitor] Cerrando conexión con Engine para forzar re-sincronización...")
+                    sock_engine.close()
+                    sock_engine = None  # Importante: ponerlo a None
+                    
+                    sock_central.close()
+                    sock_central = None
+                    
+                    symmetric_key = None # Borramos la clave localmente
+                    break # Salimos del bucle para volver al menú
+                    
+            except socket.timeout:
+                pass # No hay mensajes de Central, seguimos normal
+            except Exception as e:
+                print(f"[Monitor] Conexión con Central perdida: {e}")
+                break
+
             # 2. Notificar a Central si hay cambio
             if new_status != current_status:
                 print(f"[Estado] Cambio detectado: {current_status} -> {new_status}")

@@ -37,6 +37,8 @@ kafka_bootstrap_servers = None
 socket_port = None
 stop_event = threading.Event()
 local_weather_alerts = {}
+active_sockets = {} 
+active_sockets_lock = threading.Lock()
 
 # Estado en memoria (se sincroniza con BD)
 cp_states = {} 
@@ -136,6 +138,24 @@ def cp_state_synchronization_thread():
                     if is_alert_active and current_status in {'IDLE', 'CHARGING'}:
                         print(f"[ALERTA CLIMA] Temp {current_temp}°C insegura en {cp_id}. Forzando STOP.")
                         command = "STOP_COMMAND"
+
+                        # Recuperamos quién está cargando en ese momento
+                        active_driver_id = cp_states[cp_id].get('driver_id')
+                        
+                        if active_driver_id:
+                            print(f"[Central->Driver] Notificando parada por clima a {active_driver_id}...")
+                            notification_msg = {
+                                "driver_id": active_driver_id,
+                                "cp_id": cp_id,
+                                "event": "CHARGE_STOPPED_BY_CENTRAL",
+                                "reason": f"Alerta Climática: {current_temp}°C",
+                                "status": "STOPPED",
+                                # Enviamos lo acumulado hasta ahora en memoria
+                                "total_kwh": cp_states[cp_id].get('session_kwh', 0.0),
+                                "total_cost": cp_states[cp_id].get('session_cost', 0.0)
+                            }
+                            # Enviar al tema de notificaciones del driver
+                            send_kafka_message(TOPIC_DRIVER_NOTIFY, notification_msg)
                         
                         # Actualizamos estado inmediatamente
                         cp_states[cp_id]['status'] = 'STOPPED'
@@ -463,6 +483,10 @@ def handle_monitor(conn, addr):
                         'session_cost': 0.0
                     }
                 update_cp_status_in_db(cp_id, 'IDLE')
+
+                with active_sockets_lock:
+                    active_sockets[cp_id] = conn
+
                 conn.sendall(b"ACK_REGISTER")
                 log_audit_event(addr[0], cp_id, "AUTH_SUCCESS", "Monitor autenticado.")
             else:
@@ -511,8 +535,13 @@ def handle_monitor(conn, addr):
                 break
 
     except Exception as e:
-        print(f"[Socket] Error {addr}: {e}")
+        pass
     finally:
+        # Limpiar el socket del registro
+        if cp_id:
+            with active_sockets_lock:
+                if cp_id in active_sockets:
+                    del active_sockets[cp_id]
         # Bloque de seguridad: Si el socket se rompe (se cierra el Monitor)
         if cp_id:
             with cp_states_lock:
@@ -581,8 +610,22 @@ def revoke_cp_credentials(cp_id):
             cp_states[cp_id]['is_registered'] = 0
             cp_states[cp_id]['status'] = 'DISCONNECTED'
             cp_states[cp_id]['driver_id'] = None
+
+    # 3. Avisar al Monitor y cortar conexiones
+    with active_sockets_lock:
+        if cp_id in active_sockets:
+            sock = active_sockets[cp_id]
+            print(f"[Seguridad] Enviando aviso de revocación a {cp_id}...")
+            try:
+                sock.sendall(b"REVOCATION_NOTICE")
+                time.sleep(0.1) # Dar tiempo a que salga el mensaje
+                # Al cerrar el socket aquí, el hilo 'handle_monitor' saltará al 'finally'
+                sock.close() 
+            except Exception as e:
+                print(f"[Error] Fallo al cerrar socket: {e}")
+            del active_sockets[cp_id]
     
-    # 3. Auditoría
+    # 4. Auditoría
     log_audit_event("Central/Admin", cp_id, "KEY_REVOKED", "Claves revocadas por vulnerabilidad. CP fuera de servicio.")
     print(f"[Seguridad] {cp_id} ha sido expulsado del sistema.")
 
